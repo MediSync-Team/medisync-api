@@ -1,0 +1,212 @@
+// MediSync - Prisma Schema
+// Backend: medisync-api
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum Rol {
+  PROFESIONAL
+  PACIENTE
+}
+
+enum Modalidad {
+  PRESENCIAL
+  VIRTUAL
+  AMBOS
+}
+
+enum EstadoTurno {
+  RESERVADO
+  CONFIRMADO
+  COMPLETADO
+  CANCELADO
+  AUSENTE
+}
+
+enum EstadoPago {
+  PENDIENTE
+  APROBADO
+  RECHAZADO
+  REEMBOLSADO
+}
+
+enum TipoArchivo {
+  EVOLUCION
+  LABORATORIO
+  IMAGEN
+  OTRO
+}
+
+// ==================== MODELOS ====================
+
+model Usuario {
+  id              String   @id @default(uuid())
+  email           String   @unique
+  passwordHash    String   @map("password_hash")
+  rol             Rol      @default(PACIENTE)
+  googleToken     String?  @map("google_token")
+  mpAccessToken   String?  @map("mp_access_token")
+  mpRefreshToken  String?  @map("mp_refresh_token")
+  mpVendedorId    String?  @map("mp_vendedor_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  profesional     Profesional?
+  paciente        Paciente?
+
+  @@map("usuario")
+}
+
+model Especialidad {
+  id          String   @id @default(uuid())
+  nombre      String   @unique
+  descripcion String?
+  icono       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  profesionales Profesional[]
+
+  @@map("especialidad")
+}
+
+model Profesional {
+  id              String   @id @default(uuid())
+  usuarioId       String   @unique @map("usuario_id")
+  nombre          String
+  apellido        String
+  telefono        String
+  matricula       String?  @map("matricula")
+  precioConsulta  Decimal  @default(0) @map("precio_consulta") @db.Decimal(10, 2)
+  bio             String?
+  lugarAtencion   String?  @map("lugar_atencion")
+  fotoUrl         String?  @map("foto_url")
+  activo          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  usuario         Usuario      @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  especialidad    Especialidad @relation(fields: [especialidadId], references: [id])
+  especialidadId String       @map("especialidad_id")
+
+  disponibilidades Disponibilidad[]
+  turnos           Turno[]
+
+  @@map("profesional")
+}
+
+model Disponibilidad {
+  id              String    @id @default(uuid())
+  profesionalId   String    @map("professional_id")
+  diaSemana       Int       @map("dia_semana")
+  horaInicio      String    @map("hora_inicio")
+  horaFin         String    @map("hora_fin")
+  modalidad       Modalidad @default(PRESENCIAL)
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  profesional     Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+
+  @@index([profesionalId])
+  @@map("disponibilidad")
+}
+
+model Paciente {
+  id                   String   @id @default(uuid())
+  usuarioId            String   @unique @map("usuario_id")
+  nombre               String
+  apellido             String
+  email                String
+  telefono             String?
+  fechaNacimiento      DateTime? @map("fecha_nacimiento")
+  dni                  String?
+  obraSocial           String?  @map("obra_social")
+  aceptaRecordatorios  Boolean  @default(true) @map("acepta_recordatorios")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  turnos    Turno[]
+
+  @@map("paciente")
+}
+
+model Turno {
+  id                  String      @id @default(uuid())
+  profesionalId       String      @map("profesional_id")
+  pacienteId          String?     @map("paciente_id")
+  fechaHora           DateTime    @map("fecha_hora")
+  duracionMin         Int         @default(30) @map("duracion_min")
+  modalidad           Modalidad
+  estado              EstadoTurno @default(RESERVADO)
+  linkVideollamada    String?     @map("link_videollamada")
+  notasCancelacion    String?     @map("notas_cancelacion")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+
+  profesional  Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+  paciente     Paciente?   @relation(fields: [pacienteId], references: [id], onDelete: SetNull)
+
+  evolucion    Evolucion?
+  archivos     Archivo[]
+  pago         Pago?
+
+  @@unique([profesionalId, fechaHora])
+  @@index([profesionalId, fechaHora])
+  @@index([pacienteId])
+  @@index([estado, fechaHora])
+  @@map("turno")
+}
+
+model Evolucion {
+  id        String   @id @default(uuid())
+  turnoId   String   @unique @map("turno_id")
+  contenido String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@map("evolucion")
+}
+
+model Archivo {
+  id              String      @id @default(uuid())
+  turnoId         String      @map("turno_id")
+  tipo            TipoArchivo @default(OTRO)
+  url             String
+  nombreOriginal  String      @map("nombre_original")
+  tamanoBytes     Int         @map("tamano_bytes")
+  mimeType        String      @map("mime_type")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@index([turnoId])
+  @@map("archivo")
+}
+
+model Pago {
+  id                  String      @id @default(uuid())
+  turnoId             String      @unique @map("turno_id")
+  monto               Decimal     @db.Decimal(10, 2)
+  comisionPorcentaje  Decimal     @default(10) @map("comision_porcentaje") @db.Decimal(5, 2)
+  montoNeto           Decimal     @map("monto_neto") @db.Decimal(10, 2)
+  estado              EstadoPago  @default(PENDIENTE)
+  mpPreferenciaId     String?     @map("mp_preferencia_id")
+  mpPaymentId         String?     @map("mp_payment_id")
+  mpStatus            String?     @map("mp_status")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+
+  turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@map("pago")
+}
