@@ -98,6 +98,22 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
   res.json(success(slots));
 }));
 
+router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const turno = await prisma.turno.findUnique({
+    where: { id: req.params.id },
+    include: { 
+      profesional: { include: { especialidad: true } },
+      paciente: true,
+    },
+  });
+
+  if (!turno) {
+    throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+  }
+
+  res.json(success(turno));
+}));
+
 router.post(
   '/reservar',
   [

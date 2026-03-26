@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
 import { authRouter } from './routes/auth.routes';
 import { especialidadesRouter } from './routes/especialidades.routes';
 import { profesionalesRouter } from './routes/profesionales.routes';
@@ -8,12 +10,17 @@ import { turnosRouter } from './routes/turnos.routes';
 import { pagosRouter } from './routes/pagos.routes';
 import { archivosRouter } from './routes/archivos.routes';
 import { dashboardRouter } from './routes/dashboard.routes';
+import { recordatoriosRouter } from './routes/recordatorios.routes';
 import { errorHandler } from './middleware/error.middleware';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+if (!fs.existsSync('./uploads')) {
+  fs.mkdirSync('./uploads');
+}
 
 app.use(cors({ 
   origin: process.env.NODE_ENV === 'production' 
@@ -23,6 +30,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -35,6 +43,7 @@ app.use('/api/turnos', turnosRouter);
 app.use('/api/pagos', pagosRouter);
 app.use('/api/archivos', archivosRouter);
 app.use('/api/profesional', dashboardRouter);
+app.use('/api/recordatorios', recordatoriosRouter);
 
 app.use(errorHandler);
 
