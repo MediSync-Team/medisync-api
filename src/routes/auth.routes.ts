@@ -16,6 +16,7 @@ router.post(
     body('rol').isIn(['PROFESIONAL', 'PACIENTE']),
     body('nombre').notEmpty().trim(),
     body('apellido').notEmpty().trim(),
+    body('telefono').optional().matches(/^[\d\s\-\+\(\)]{8,20}$/),
   ],
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);

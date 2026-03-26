@@ -59,6 +59,10 @@ router.post(
     };
 
     try {
+      console.log('Creando preferencia...');
+      console.log('Token:', process.env.MP_ACCESS_TOKEN ? 'presente' : 'ausente');
+      console.log('Preference data:', JSON.stringify(preferenceData, null, 2));
+      
       const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
         method: 'POST',
         headers: {
@@ -69,9 +73,24 @@ router.post(
       });
 
       const data = await response.json();
+      console.log('Respuesta MP status:', response.status);
+      console.log('Respuesta MP:', data);
 
-      await prisma.pago.create({
-        data: {
+      if (!response.ok || data.error) {
+        const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
+        console.error('MP Error:', errorMsg);
+        throw new AppError(400, 'MP_ERROR', errorMsg);
+      }
+
+      await prisma.pago.upsert({
+        where: { turnoId },
+        update: {
+          monto: precio,
+          montoNeto: precio * 0.9,
+          estado: 'PENDIENTE',
+          mpPreferenciaId: data.id,
+        },
+        create: {
           turnoId,
           monto: precio,
           montoNeto: precio * 0.9,
@@ -145,6 +164,32 @@ router.get('/estado/:turnoId', authMiddleware(), asyncHandler(async (req: AuthRe
     monto: pago.monto,
     necesitaPago: pago.estado !== 'APROBADO',
   }));
+}));
+
+router.post('/confirmar-pago', asyncHandler(async (req, res) => {
+  const turnoId = req.query.turnoId as string;
+
+  if (!turnoId) {
+    throw new AppError(400, 'MISSING_PARAM', 'turnoId es requerido');
+  }
+
+  const pago = await prisma.pago.findUnique({
+    where: { turnoId },
+  });
+
+  if (pago && pago.estado !== 'APROBADO') {
+    await prisma.pago.update({
+      where: { turnoId },
+      data: { estado: 'APROBADO' },
+    });
+
+    await prisma.turno.update({
+      where: { id: turnoId },
+      data: { estado: 'CONFIRMADO' },
+    });
+  }
+
+  res.json(success({ confirmed: true }));
 }));
 
 export { router as pagosRouter };
