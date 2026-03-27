@@ -45,6 +45,13 @@ enum TipoArchivo {
   OTRO
 }
 
+enum Genero {
+  MASCULINO
+  FEMENINO
+  OTRO
+  NO_ESPECIFICADO
+}
+
 // ==================== MODELOS ====================
 
 model Usuario {
@@ -83,6 +90,7 @@ model Profesional {
   nombre          String
   apellido        String
   telefono        String
+  genero          Genero   @default(NO_ESPECIFICADO)
   matricula       String?  @map("matricula")
   precioConsulta  Decimal  @default(0) @map("precio_consulta") @db.Decimal(10, 2)
   bio             String?
@@ -119,18 +127,20 @@ model Disponibilidad {
 }
 
 model Paciente {
-  id                   String   @id @default(uuid())
-  usuarioId            String   @unique @map("usuario_id")
+  id                   String    @id @default(uuid())
+  usuarioId            String    @unique @map("usuario_id")
   nombre               String
   apellido             String
   email                String
   telefono             String?
+  genero               Genero    @default(NO_ESPECIFICADO)
   fechaNacimiento      DateTime? @map("fecha_nacimiento")
   dni                  String?
-  obraSocial           String?  @map("obra_social")
-  aceptaRecordatorios  Boolean  @default(true) @map("acepta_recordatorios")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  obraSocial           String?   @map("obra_social")
+  fotoUrl              String?   @map("foto_url")
+  aceptaRecordatorios  Boolean   @default(true) @map("acepta_recordatorios")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
   turnos    Turno[]

@@ -17,6 +17,7 @@ router.post(
     body('nombre').notEmpty().trim(),
     body('apellido').notEmpty().trim(),
     body('telefono').optional().matches(/^[\d\s\-\+\(\)]{8,20}$/),
+    body('genero').optional().isIn(['MASCULINO', 'FEMENINO', 'OTRO', 'NO_ESPECIFICADO']),
   ],
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
@@ -24,7 +25,7 @@ router.post(
       throw new AppError(400, 'VALIDATION_ERROR', errors.array()[0].msg);
     }
 
-    const { email, password, rol, nombre, apellido, telefono, matricula, especialidadId, precioConsulta } = req.body;
+    const { email, password, rol, nombre, apellido, telefono, genero, matricula, especialidadId, precioConsulta } = req.body;
 
     const existing = await prisma.usuario.findUnique({ where: { email } });
     if (existing) {
@@ -43,6 +44,7 @@ router.post(
             nombre,
             apellido,
             telefono: telefono || '',
+            genero: genero || 'NO_ESPECIFICADO',
             matricula,
             especialidadId,
             precioConsulta: precioConsulta || 0,
@@ -54,6 +56,7 @@ router.post(
             apellido,
             email,
             telefono,
+            genero: genero || 'NO_ESPECIFICADO',
           },
         } : undefined,
       },
