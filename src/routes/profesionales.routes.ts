@@ -61,11 +61,33 @@ router.get('/:id', asyncHandler(async (req, res) => {
 
 router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const authReq = req as AuthRequest;
-  const { bio, telefono, lugarAtencion, precioConsulta, fotoUrl } = req.body;
+  const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl } = req.body;
+
+  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: authReq.user!.userId } });
+  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para editar este perfil');
+  }
+
+  if (telefono && !/^[\d\s\-\+\(\)]{8,20}$/.test(telefono)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El teléfono tiene un formato inválido');
+  }
+
+  if (genero && !['MASCULINO', 'FEMENINO', 'OTRO', 'NO_ESPECIFICADO'].includes(genero)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El género debe ser MASCULINO, FEMENINO, OTRO o NO_ESPECIFICADO');
+  }
 
   const profesional = await prisma.profesional.update({
     where: { id: req.params.id },
-    data: { bio, telefono, lugarAtencion, precioConsulta, fotoUrl },
+    data: { 
+      nombre, 
+      apellido, 
+      bio, 
+      telefono, 
+      genero: genero || 'NO_ESPECIFICADO',
+      lugarAtencion, 
+      precioConsulta, 
+      fotoUrl 
+    },
   });
 
   res.json(success(profesional));
@@ -73,6 +95,19 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
 
 router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const { diaSemana, horaInicio, horaFin, modalidad } = req.body;
+
+  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para gestionar esta disponibilidad');
+  }
+
+  if (!Number.isInteger(diaSemana) || diaSemana < 0 || diaSemana > 6) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'diaSemana debe estar entre 0 y 6');
+  }
+
+  if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin) || horaInicio >= horaFin) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Rango horario invalido');
+  }
 
   const disponibilidad = await prisma.disponibilidad.create({
     data: {
@@ -96,7 +131,20 @@ router.get('/:id/disponibilidad', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyncHandler(async (req, res) => {
-  await prisma.disponibilidad.delete({ where: { id: req.params.dispId } });
+  const authReq = req as AuthRequest;
+  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: authReq.user!.userId } });
+  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para eliminar esta disponibilidad');
+  }
+
+  const deleted = await prisma.disponibilidad.deleteMany({
+    where: { id: req.params.dispId, profesionalId: req.params.id },
+  });
+
+  if (deleted.count === 0) {
+    throw new AppError(404, 'NOT_FOUND', 'Disponibilidad no encontrada');
+  }
+
   res.json(success({ deleted: true }));
 }));
 

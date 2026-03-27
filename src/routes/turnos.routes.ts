@@ -1,11 +1,41 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
-import { Decimal } from '@prisma/client/runtime/library';
+import { EstadoTurno } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 
 const router = Router();
+
+async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
+  const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
+  return profesional?.id || null;
+}
+
+async function assertTurnoAccess(turnoId: string, req: AuthRequest) {
+  const turno = await prisma.turno.findUnique({
+    where: { id: turnoId },
+    include: {
+      paciente: { select: { usuarioId: true } },
+      profesional: { select: { usuarioId: true } },
+      pago: true,
+    },
+  });
+
+  if (!turno) {
+    throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+  }
+
+  const userId = req.user!.userId;
+  const isPacienteOwner = turno.paciente?.usuarioId === userId;
+  const isProfesionalOwner = turno.profesional.usuarioId === userId;
+
+  if (!isPacienteOwner && !isProfesionalOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para acceder al turno');
+  }
+
+  return { turno, isPacienteOwner, isProfesionalOwner };
+}
 
 router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
   const authReq = req as AuthRequest;
@@ -36,7 +66,12 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
   res.json(success(turnos));
 }));
 
-router.get('/profesional/:profesionalId', asyncHandler(async (req, res) => {
+router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalId = await getProfesionalIdByUsuario(req.user!.userId);
+  if (!profesionalId || profesionalId !== req.params.profesionalId) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para ver estos turnos');
+  }
+
   const { desde, hasta, estado } = req.query;
 
   const where: any = { profesionalId: req.params.profesionalId };
@@ -99,6 +134,8 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
 }));
 
 router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  await assertTurnoAccess(req.params.id, req);
+
   const turno = await prisma.turno.findUnique({
     where: { id: req.params.id },
     include: { 
@@ -120,6 +157,9 @@ router.post(
     body('profesionalId').isUUID(),
     body('fechaHora').isISO8601(),
     body('modalidad').isIn(['PRESENCIAL', 'VIRTUAL']),
+    body('paciente.email').optional().isEmail(),
+    body('paciente.nombre').optional().isLength({ min: 1, max: 100 }),
+    body('paciente.apellido').optional().isLength({ min: 1, max: 100 }),
   ],
   asyncHandler(async (req: AuthRequest, res) => {
     const errors = validationResult(req);
@@ -129,6 +169,15 @@ router.post(
 
     const { profesionalId, fechaHora, modalidad, paciente: pacienteData } = req.body;
     const fechaHoraDate = new Date(fechaHora);
+
+    if (Number.isNaN(fechaHoraDate.getTime()) || fechaHoraDate <= new Date()) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La fecha del turno debe ser futura y valida');
+    }
+
+    const profesional = await prisma.profesional.findUnique({ where: { id: profesionalId } });
+    if (!profesional || !profesional.activo) {
+      throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+    }
 
     let pacienteId: string | null = null;
 
@@ -140,8 +189,13 @@ router.post(
         pacienteId = paciente.id;
       }
     } else if (pacienteData) {
+      const email = String(pacienteData.email || '').toLowerCase().trim();
+      if (!email) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Email de paciente requerido');
+      }
+
       const existente = await prisma.paciente.findFirst({
-        where: { email: pacienteData.email },
+        where: { email },
       });
       
       if (existente) {
@@ -149,10 +203,10 @@ router.post(
       } else {
         const paciente = await prisma.paciente.create({
           data: {
-            usuarioId: 'guest-' + pacienteData.email,
+            usuarioId: 'guest-' + email,
             nombre: pacienteData.nombre,
             apellido: pacienteData.apellido,
-            email: pacienteData.email,
+            email,
             telefono: pacienteData.telefono,
             dni: pacienteData.dni,
           },
@@ -195,6 +249,21 @@ router.post(
 router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { estado, notasCancelacion } = req.body;
 
+  const validEstados = Object.values(EstadoTurno);
+  if (estado && !validEstados.includes(estado)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Estado de turno invalido');
+  }
+
+  const { isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
+
+  if (isPacienteOwner && estado && estado !== 'CANCELADO') {
+    throw new AppError(403, 'FORBIDDEN', 'El paciente solo puede cancelar su turno');
+  }
+
+  if (!isPacienteOwner && !isProfesionalOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para modificar este turno');
+  }
+
   const turno = await prisma.turno.update({
     where: { id: req.params.id },
     data: { estado, notasCancelacion },
@@ -203,7 +272,9 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   res.json(success(turno));
 }));
 
-router.get('/:id/evolucion', asyncHandler(async (req, res) => {
+router.get('/:id/evolucion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  await assertTurnoAccess(req.params.id, req);
+
   const evolucion = await prisma.evolucion.findUnique({
     where: { turnoId: req.params.id },
     include: { turno: { include: { archivos: true } } },
@@ -214,6 +285,23 @@ router.get('/:id/evolucion', asyncHandler(async (req, res) => {
 
 router.post('/:id/evolucion', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const { contenido } = req.body;
+
+  const turno = await prisma.turno.findUnique({
+    where: { id: req.params.id },
+    include: { profesional: { select: { usuarioId: true } } },
+  });
+
+  if (!turno) {
+    throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+  }
+
+  if (turno.profesional.usuarioId !== req.user!.userId) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para actualizar esta evolucion');
+  }
+
+  if (!contenido || String(contenido).trim().length < 5) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El contenido debe tener al menos 5 caracteres');
+  }
 
   const evolucion = await prisma.evolucion.upsert({
     where: { turnoId: req.params.id },

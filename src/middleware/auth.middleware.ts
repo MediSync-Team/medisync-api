@@ -2,7 +2,14 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 import { error } from '../utils/response';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET no configurado');
+  }
+
+  return secret;
+}
 
 export interface JwtPayload {
   userId: string;
@@ -15,11 +22,11 @@ export interface AuthRequest extends Request {
 }
 
 export function generateToken(payload: JwtPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
 }
 
 export function verifyToken(token: string): JwtPayload {
-  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+  return jwt.verify(token, getJwtSecret()) as JwtPayload;
 }
 
 export function authMiddleware(requiredRol?: 'PROFESIONAL' | 'PACIENTE') {
