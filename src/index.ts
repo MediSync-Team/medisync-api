@@ -36,19 +36,7 @@ app.use(rateLimit({
 }));
 
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) {
-      callback(null, true);
-      return;
-    }
-
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-
-    callback(new Error('CORS no permitido'));
-  },
+  origin: '*',
   credentials: true,
 }));
 app.use(express.json());
