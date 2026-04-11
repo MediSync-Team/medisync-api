@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
+import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 
 const router = Router();
 
@@ -263,6 +264,15 @@ router.post(
       });
 
       if (turnoConRelaciones) {
+        if (turnoConRelaciones.pacienteId) {
+          await resolveWaitlistForBooking({
+            profesionalId: turnoConRelaciones.profesionalId,
+            pacienteId: turnoConRelaciones.pacienteId,
+            fechaHora: turnoConRelaciones.fechaHora,
+            modalidad: turnoConRelaciones.modalidad as 'PRESENCIAL' | 'VIRTUAL',
+          });
+        }
+
         await sendNotification(['EMAIL', 'WHATSAPP'], {
           title: 'Turno reservado',
           message: `Tu turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')} fue reservado correctamente.`,
@@ -430,6 +440,13 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
         turnoId: turnoActualizado.id,
         profesionalId: turnoActualizado.profesionalId,
       },
+    });
+
+    await notifyWaitlistForReleasedSlot({
+      profesionalId: turnoActualizado.profesionalId,
+      fechaHora: turnoActualizado.fechaHora,
+      modalidad: turnoActualizado.modalidad as 'PRESENCIAL' | 'VIRTUAL',
+      turnoId: turnoActualizado.id,
     });
   }
 

@@ -38,6 +38,13 @@ enum EstadoPago {
   REEMBOLSADO
 }
 
+enum EstadoListaEspera {
+  ACTIVA
+  NOTIFICADA
+  RESUELTA
+  CANCELADA
+}
+
 enum TipoArchivo {
   EVOLUCION
   LABORATORIO
@@ -106,6 +113,7 @@ model Profesional {
 
   disponibilidades Disponibilidad[]
   turnos           Turno[]
+  listaEspera      ListaEspera[]
 
   @@map("profesional")
 }
@@ -144,6 +152,7 @@ model Paciente {
 
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
   turnos    Turno[]
+  listaEspera ListaEspera[]
 
   @@map("paciente")
 }
@@ -219,4 +228,24 @@ model Pago {
   turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
 
   @@map("pago")
+}
+
+model ListaEspera {
+  id            String           @id @default(uuid())
+  profesionalId String           @map("profesional_id")
+  pacienteId    String           @map("paciente_id")
+  fecha         DateTime         @db.Date
+  modalidad     Modalidad
+  estado        EstadoListaEspera @default(ACTIVA)
+  notificadoAt  DateTime?        @map("notificado_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+  paciente    Paciente    @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+
+  @@index([profesionalId, fecha, estado])
+  @@index([pacienteId, estado])
+  @@unique([profesionalId, pacienteId, fecha, modalidad, estado])
+  @@map("lista_espera")
 }

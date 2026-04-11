@@ -16,6 +16,7 @@ import { dashboardRouter } from './routes/dashboard.routes';
 import { recordatoriosRouter } from './routes/recordatorios.routes';
 import { pacientesRouter } from './routes/pacientes.routes';
 import { notificationsRouter } from './routes/notifications.routes';
+import { listaEsperaRouter } from './routes/lista-espera.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 
@@ -82,6 +83,7 @@ app.use('/api/profesional', dashboardRouter);
 app.use('/api/recordatorios', recordatoriosRouter);
 app.use('/api/pacientes', pacientesRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/lista-espera', listaEsperaRouter);
 
 app.use(errorHandler);
 
