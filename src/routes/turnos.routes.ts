@@ -292,6 +292,15 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     throw new AppError(400, 'VALIDATION_ERROR', 'La nueva fecha debe ser futura y valida');
   }
 
+  if (nuevaFechaHora.getMinutes() !== 0 && nuevaFechaHora.getMinutes() !== 30) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
+  }
+
+  const nuevaModalidad = modalidad || undefined;
+  if (nuevaModalidad && !['PRESENCIAL', 'VIRTUAL'].includes(nuevaModalidad)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Modalidad invalida');
+  }
+
   const { turno, isPacienteOwner } = await assertTurnoAccess(req.params.id, req);
 
   if (!isPacienteOwner) {
@@ -300,6 +309,28 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
 
   if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
     throw new AppError(400, 'INVALID_STATE', 'Solo se pueden reprogramar turnos reservados o confirmados');
+  }
+
+  const modalidadFinal = nuevaModalidad || turno.modalidad;
+  const diaSemana = nuevaFechaHora.getDay();
+  const horaStr = `${String(nuevaFechaHora.getHours()).padStart(2, '0')}:${String(nuevaFechaHora.getMinutes()).padStart(2, '0')}`;
+
+  const disponibilidades = await prisma.disponibilidad.findMany({
+    where: {
+      profesionalId: turno.profesionalId,
+      diaSemana,
+      activo: true,
+    },
+  });
+
+  const slotValido = disponibilidades.some((disp) => {
+    const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidadFinal;
+    const horarioOk = horaStr >= disp.horaInicio && horaStr < disp.horaFin;
+    return modalidadOk && horarioOk;
+  });
+
+  if (!slotValido) {
+    throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
   }
 
   if (!canCancelTurno(turno.fechaHora)) {
@@ -328,7 +359,7 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
       where: { id: turno.id },
       data: {
         fechaHora: nuevaFechaHora,
-        modalidad: modalidad || turno.modalidad,
+        modalidad: modalidadFinal,
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },
       include: {
