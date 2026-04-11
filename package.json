@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "seed": "tsx prisma/seed.ts",
+    "smoke:sprint1": "tsx src/scripts/smoke-sprint1.ts",
     "lint": "eslint src --ext .ts",
     "test": "jest",
     "test:watch": "jest --watch"
