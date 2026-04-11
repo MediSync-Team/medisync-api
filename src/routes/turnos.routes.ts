@@ -4,6 +4,7 @@ import { EstadoTurno } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
@@ -35,6 +36,12 @@ async function assertTurnoAccess(turnoId: string, req: AuthRequest) {
   }
 
   return { turno, isPacienteOwner, isProfesionalOwner };
+}
+
+function canCancelTurno(turnoFechaHora: Date): boolean {
+  const cancellationWindowHours = Number(process.env.CANCELLATION_WINDOW_HOURS || 24);
+  const diffMs = turnoFechaHora.getTime() - Date.now();
+  return diffMs >= cancellationWindowHours * 60 * 60 * 1000;
 }
 
 router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
@@ -133,6 +140,11 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
   res.json(success(slots));
 }));
 
+router.get('/politica-cancelacion', asyncHandler(async (_req, res) => {
+  const horasMinimas = Number(process.env.CANCELLATION_WINDOW_HOURS || 24);
+  res.json(success({ horasMinimas }));
+}));
+
 router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   await assertTurnoAccess(req.params.id, req);
 
@@ -215,7 +227,7 @@ router.post(
       }
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+      const result = await prisma.$transaction(async (tx) => {
       const existente = await tx.turno.findFirst({
         where: { profesionalId, fechaHora: fechaHoraDate, estado: { notIn: ['CANCELADO'] } },
       });
@@ -242,9 +254,105 @@ router.post(
       return turno;
     });
 
-    res.status(201).json(success({ turno: result, linkPago: null }));
+      const turnoConRelaciones = await prisma.turno.findUnique({
+        where: { id: result.id },
+        include: {
+          profesional: true,
+          paciente: true,
+        },
+      });
+
+      if (turnoConRelaciones) {
+        await sendNotification(['EMAIL', 'WHATSAPP'], {
+          title: 'Turno reservado',
+          message: `Tu turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')} fue reservado correctamente.`,
+          userEmail: turnoConRelaciones.paciente?.email,
+          userPhone: turnoConRelaciones.paciente?.telefono,
+          meta: {
+            turnoId: turnoConRelaciones.id,
+            profesionalId: turnoConRelaciones.profesionalId,
+            estado: turnoConRelaciones.estado,
+          },
+        });
+      }
+
+      res.status(201).json(success({ turno: result, linkPago: null }));
   })
 );
+
+router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const { fechaHora, modalidad } = req.body;
+
+  if (!fechaHora) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'fechaHora es requerida');
+  }
+
+  const nuevaFechaHora = new Date(String(fechaHora));
+  if (Number.isNaN(nuevaFechaHora.getTime()) || nuevaFechaHora <= new Date()) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'La nueva fecha debe ser futura y valida');
+  }
+
+  const { turno, isPacienteOwner } = await assertTurnoAccess(req.params.id, req);
+
+  if (!isPacienteOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Solo el paciente puede reprogramar este turno');
+  }
+
+  if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
+    throw new AppError(400, 'INVALID_STATE', 'Solo se pueden reprogramar turnos reservados o confirmados');
+  }
+
+  if (!canCancelTurno(turno.fechaHora)) {
+    throw new AppError(
+      422,
+      'RESCHEDULE_WINDOW_EXCEEDED',
+      `Solo podes reprogramar turnos con al menos ${process.env.CANCELLATION_WINDOW_HOURS || 24} horas de anticipacion`
+    );
+  }
+
+  const turnoActualizado = await prisma.$transaction(async (tx) => {
+    const conflicto = await tx.turno.findFirst({
+      where: {
+        id: { not: turno.id },
+        profesionalId: turno.profesionalId,
+        fechaHora: nuevaFechaHora,
+        estado: { notIn: ['CANCELADO'] },
+      },
+    });
+
+    if (conflicto) {
+      throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El nuevo horario ya fue reservado');
+    }
+
+    return tx.turno.update({
+      where: { id: turno.id },
+      data: {
+        fechaHora: nuevaFechaHora,
+        modalidad: modalidad || turno.modalidad,
+        estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
+      },
+      include: {
+        paciente: true,
+        profesional: true,
+        pago: true,
+      },
+    });
+  });
+
+  await sendNotification(['EMAIL', 'WHATSAPP'], {
+    title: 'Turno reprogramado',
+    message: `Tu turno fue reprogramado para el ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
+    userEmail: turnoActualizado.paciente?.email,
+    userPhone: turnoActualizado.paciente?.telefono,
+    meta: {
+      turnoId: turnoActualizado.id,
+      profesionalId: turnoActualizado.profesionalId,
+      modalidad: turnoActualizado.modalidad,
+    },
+  });
+
+  res.json(success(turnoActualizado));
+}));
 
 router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { estado, notasCancelacion } = req.body;
@@ -254,22 +362,47 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     throw new AppError(400, 'VALIDATION_ERROR', 'Estado de turno invalido');
   }
 
-  const { isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
+  const { turno: turnoActual, isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
 
   if (isPacienteOwner && estado && estado !== 'CANCELADO') {
     throw new AppError(403, 'FORBIDDEN', 'El paciente solo puede cancelar su turno');
+  }
+
+  if (isPacienteOwner && estado === 'CANCELADO' && !canCancelTurno(turnoActual.fechaHora)) {
+    throw new AppError(
+      422,
+      'CANCELLATION_WINDOW_EXCEEDED',
+      `Solo podes cancelar turnos con al menos ${process.env.CANCELLATION_WINDOW_HOURS || 24} horas de anticipacion`
+    );
   }
 
   if (!isPacienteOwner && !isProfesionalOwner) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para modificar este turno');
   }
 
-  const turno = await prisma.turno.update({
+  const turnoActualizado = await prisma.turno.update({
     where: { id: req.params.id },
     data: { estado, notasCancelacion },
+    include: {
+      paciente: true,
+      profesional: true,
+    },
   });
 
-  res.json(success(turno));
+  if (estado === 'CANCELADO') {
+    await sendNotification(['EMAIL', 'WHATSAPP'], {
+      title: 'Turno cancelado',
+      message: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
+      userEmail: turnoActualizado.paciente?.email,
+      userPhone: turnoActualizado.paciente?.telefono,
+      meta: {
+        turnoId: turnoActualizado.id,
+        profesionalId: turnoActualizado.profesionalId,
+      },
+    });
+  }
+
+  res.json(success(turnoActualizado));
 }));
 
 router.get('/:id/evolucion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {

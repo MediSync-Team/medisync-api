@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
+import cron from 'node-cron';
 import { authRouter } from './routes/auth.routes';
 import { especialidadesRouter } from './routes/especialidades.routes';
 import { profesionalesRouter } from './routes/profesionales.routes';
@@ -15,6 +16,7 @@ import { dashboardRouter } from './routes/dashboard.routes';
 import { recordatoriosRouter } from './routes/recordatorios.routes';
 import { pacientesRouter } from './routes/pacientes.routes';
 import { errorHandler } from './middleware/error.middleware';
+import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -26,6 +28,8 @@ const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL ||
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
 }
+
+app.set('trust proxy', 1);
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(rateLimit({
@@ -82,6 +86,14 @@ app.use(errorHandler);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📚 API: http://localhost:${PORT}/api`);
+});
+
+cron.schedule('0 * * * *', async () => {
+  try {
+    await sendUpcomingAppointmentsReminders();
+  } catch (err) {
+    console.error('[reminders] scheduled job error:', err);
+  }
 });
 
 export default app;

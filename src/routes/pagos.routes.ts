@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
@@ -173,6 +174,7 @@ router.post(
         necesitaPago: true,
         preferenciaId: data.id,
         initPoint: data.init_point,
+        estado: 'PENDIENTE',
       }));
     } catch (err) {
       console.error('Error creando preferencia MP:', err);
@@ -204,7 +206,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const turnoId = payment.external_reference;
 
       if (turnoId && payment.status === 'approved') {
-        await prisma.pago.upsert({
+        const pago = await prisma.pago.upsert({
           where: { turnoId },
           update: {
             estado: 'APROBADO',
@@ -221,9 +223,22 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           },
         });
 
-        await prisma.turno.update({
+        const turno = await prisma.turno.update({
           where: { id: turnoId },
           data: { estado: 'CONFIRMADO' },
+          include: { paciente: true, profesional: true },
+        });
+
+        await sendNotification(['EMAIL', 'WHATSAPP'], {
+          title: 'Pago aprobado',
+          message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedo confirmado.`,
+          userEmail: turno.paciente?.email,
+          userPhone: turno.paciente?.telefono,
+          meta: {
+            turnoId: turno.id,
+            pagoId: pago.id,
+            mpPaymentId: paymentId,
+          },
         });
       }
     } catch (err) {
@@ -263,6 +278,7 @@ router.get('/estado/:turnoId', authMiddleware(), asyncHandler(async (req: AuthRe
     estado: pago.estado,
     monto: pago.monto,
     necesitaPago: pago.estado !== 'APROBADO',
+    initPoint: pago.estado !== 'APROBADO' ? `/pago?turno=${req.params.turnoId}` : null,
   }));
 }));
 
