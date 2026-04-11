@@ -8,6 +8,25 @@ interface NotificationPayload {
   meta?: Record<string, unknown>;
 }
 
+interface NotificationDeliveryResult {
+  channel: NotificationChannel;
+  delivered: boolean;
+  reason?: string;
+}
+
+const NOTIFICATION_TIMEOUT_MS = Number(process.env.NOTIFICATIONS_TIMEOUT_MS || 10000);
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = NOTIFICATION_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function toJsonString(value: unknown): string {
   try {
     return JSON.stringify(value);
@@ -23,7 +42,7 @@ async function sendEmailResend(payload: NotificationPayload) {
 
   if (!apiKey || !from || !to) return false;
 
-  const response = await fetch('https://api.resend.com/emails', {
+  const response = await fetchWithTimeout('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -47,7 +66,11 @@ async function sendEmailResend(payload: NotificationPayload) {
 
 function normalizeWhatsappPhone(phone: string): string {
   const clean = phone.replace(/[\s\-()]/g, '');
+  if (clean.startsWith('00')) return `whatsapp:+${clean.slice(2)}`;
   if (clean.startsWith('+')) return `whatsapp:${clean}`;
+  if (clean.startsWith('549')) return `whatsapp:+${clean}`;
+  if (clean.startsWith('54')) return `whatsapp:+${clean}`;
+  if (clean.startsWith('0')) return `whatsapp:+54${clean.slice(1)}`;
   return `whatsapp:+${clean}`;
 }
 
@@ -70,7 +93,7 @@ async function sendWhatsappTwilio(payload: NotificationPayload) {
     Body: `${payload.title}\n${payload.message}`,
   }).toString();
 
-  const response = await fetch(endpoint, {
+  const response = await fetchWithTimeout(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Basic ${auth}`,
@@ -92,7 +115,7 @@ async function dispatchToWebhook(channel: NotificationChannel, payload: Notifica
   if (!webhookUrl) return;
 
   try {
-    await fetch(webhookUrl, {
+    await fetchWithTimeout(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -110,31 +133,57 @@ export async function sendNotification(
   channels: NotificationChannel[],
   payload: NotificationPayload
 ) {
-  await Promise.all(
+  const notificationsEnabled = process.env.NOTIFICATIONS_ENABLED !== 'false';
+  if (!notificationsEnabled) {
+    console.log('[notifications] disabled by NOTIFICATIONS_ENABLED=false');
+    return;
+  }
+
+  const results = await Promise.all(
     channels.map(async (channel) => {
       try {
         if (channel === 'EMAIL') {
           const sent = await sendEmailResend(payload);
           if (!sent) {
             console.warn('[notifications:EMAIL] missing RESEND config or recipient');
+            return { channel, delivered: false, reason: 'missing_config_or_recipient' } satisfies NotificationDeliveryResult;
           }
+
+          await dispatchToWebhook(channel, payload);
+          return { channel, delivered: true } satisfies NotificationDeliveryResult;
         }
 
         if (channel === 'WHATSAPP') {
           const sent = await sendWhatsappTwilio(payload);
           if (!sent) {
             console.warn('[notifications:WHATSAPP] missing Twilio config or recipient');
+            return { channel, delivered: false, reason: 'missing_config_or_recipient' } satisfies NotificationDeliveryResult;
           }
+
+          await dispatchToWebhook(channel, payload);
+          return { channel, delivered: true } satisfies NotificationDeliveryResult;
         }
 
         if (channel === 'IN_APP') {
           console.log('[notifications:IN_APP]', payload.title);
+          await dispatchToWebhook(channel, payload);
+          return { channel, delivered: true } satisfies NotificationDeliveryResult;
         }
       } catch (err) {
         console.error(`[notifications:${channel}] provider error:`, err);
+        return { channel, delivered: false, reason: 'provider_error' } satisfies NotificationDeliveryResult;
       }
 
-      await dispatchToWebhook(channel, payload);
+      return { channel, delivered: false, reason: 'unsupported_channel' } satisfies NotificationDeliveryResult;
     })
   );
+
+  const delivered = results.filter((r) => r.delivered).length;
+  if (delivered === 0) {
+    console.warn('[notifications] no channel delivered', {
+      title: payload.title,
+      channels,
+      results,
+    });
+  }
 }

@@ -20,6 +20,8 @@ TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 
 CANCELLATION_WINDOW_HOURS=24
+NOTIFICATIONS_ENABLED=true
+NOTIFICATIONS_TIMEOUT_MS=10000
 ```
 
 Opcional para trazabilidad interna:
@@ -45,6 +47,19 @@ Se envian notificaciones en estos eventos:
 3. Cargar variables en entorno de backend y reiniciar servicio.
 4. Probar un turno end-to-end (reserva -> pago -> confirmacion).
 5. Validar logs de backend y delivery en paneles de Resend/Twilio.
+
+## Endpoint de prueba manual
+
+Con token de usuario autenticado:
+
+```bash
+curl -X POST https://api.example.com/api/notifications/test \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"canal":"EMAIL","mensaje":"Prueba de canal"}'
+```
+
+Canales soportados: `EMAIL`, `WHATSAPP`, `IN_APP`.
 
 ## Smoke test automatizado (Sprint 1)
 
