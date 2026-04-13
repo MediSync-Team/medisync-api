@@ -150,17 +150,22 @@ router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyn
 
 router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   const { fecha, modalidad } = req.query;
-  const fechaDate = new Date(String(fecha));
+  const fechaStr = String(fecha);
+  const [year, month, day] = fechaStr.split('-').map(Number);
+  const fechaDate = new Date(year, month - 1, day);
   const diaSemana = fechaDate.getDay();
 
   const disponibilidad = await prisma.disponibilidad.findMany({
     where: { profesionalId: req.params.id, diaSemana, activo: true },
   });
 
+  const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+
   const turnosOcupados = await prisma.turno.findMany({
     where: {
       profesionalId: req.params.id,
-      fechaHora: { gte: fechaDate, lt: new Date(fechaDate.getTime() + 86400000) },
+      fechaHora: { gte: startOfDay, lte: endOfDay },
       estado: { notIn: ['CANCELADO'] },
     },
   });
@@ -175,8 +180,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
 
     while (h < hf || (h === hf && m < mf)) {
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      const slotDate = new Date(fechaDate);
-      slotDate.setHours(h, m, 0, 0);
+      const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
 
       const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
 

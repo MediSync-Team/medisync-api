@@ -101,17 +101,22 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
 
 router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (req, res) => {
   const { fecha, modalidad } = req.query;
-  const fechaDate = new Date(String(fecha));
+  const fechaStr = String(fecha);
+  const [year, month, day] = fechaStr.split('-').map(Number);
+  const fechaDate = new Date(year, month - 1, day);
   const diaSemana = fechaDate.getDay();
 
   const disponibilidad = await prisma.disponibilidad.findMany({
     where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
   });
 
+  const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+
   const turnosOcupados = await prisma.turno.findMany({
     where: {
       profesionalId: req.params.profesionalId,
-      fechaHora: { gte: fechaDate, lt: new Date(fechaDate.getTime() + 86400000) },
+      fechaHora: { gte: startOfDay, lte: endOfDay },
       estado: { notIn: ['CANCELADO'] },
     },
   });
@@ -126,8 +131,7 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
 
     while (h < hf || (h === hf && m < mf)) {
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      const slotDate = new Date(fechaDate);
-      slotDate.setHours(h, m, 0, 0);
+      const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
 
       const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
 
@@ -322,8 +326,9 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
   }
 
   const modalidadFinal = nuevaModalidad || turno.modalidad;
-  const diaSemana = nuevaFechaHora.getDay();
-  const horaStr = `${String(nuevaFechaHora.getHours()).padStart(2, '0')}:${String(nuevaFechaHora.getMinutes()).padStart(2, '0')}`;
+  const localDate = new Date(nuevaFechaHora.getTime() - nuevaFechaHora.getTimezoneOffset() * 60000);
+  const diaSemana = localDate.getDay();
+  const horaStr = `${String(localDate.getHours()).padStart(2, '0')}:${String(localDate.getMinutes()).padStart(2, '0')}`;
 
   const disponibilidades = await prisma.disponibilidad.findMany({
     where: {
@@ -356,7 +361,7 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
       where: {
         id: { not: turno.id },
         profesionalId: turno.profesionalId,
-        fechaHora: nuevaFechaHora,
+        fechaHora: localDate,
         estado: { notIn: ['CANCELADO'] },
       },
     });
@@ -368,7 +373,7 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     return tx.turno.update({
       where: { id: turno.id },
       data: {
-        fechaHora: nuevaFechaHora,
+        fechaHora: localDate,
         modalidad: modalidadFinal,
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },
