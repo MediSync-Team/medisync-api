@@ -25,7 +25,7 @@ router.post(
       throw new AppError(400, 'VALIDATION_ERROR', errors.array()[0].msg);
     }
 
-    const { email, password, rol, nombre, apellido, telefono, genero, matricula, especialidadId, precioConsulta } = req.body;
+    const { email, password, rol, nombre, apellido, telefono, genero, matricula, especialidadId, precioConsulta, lugarAtencion, bio, fotoUrl } = req.body;
 
     const existing = await prisma.usuario.findUnique({ where: { email } });
     if (existing) {
@@ -48,6 +48,9 @@ router.post(
             matricula,
             especialidadId,
             precioConsulta: precioConsulta || 0,
+            lugarAtencion: lugarAtencion || null,
+            bio: bio || null,
+            fotoUrl: fotoUrl || null,
           },
         } : undefined,
         paciente: rol === 'PACIENTE' ? {
