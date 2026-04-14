@@ -329,9 +329,8 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
   }
 
   const modalidadFinal = nuevaModalidad || turno.modalidad;
-  const localDate = new Date(nuevaFechaHora.getTime() - nuevaFechaHora.getTimezoneOffset() * 60000);
-  const diaSemana = localDate.getDay();
-  const horaStr = `${String(localDate.getHours()).padStart(2, '0')}:${String(localDate.getMinutes()).padStart(2, '0')}`;
+  const diaSemana = nuevaFechaHora.getDay();
+  const horaStr = `${String(nuevaFechaHora.getHours()).padStart(2, '0')}:${String(nuevaFechaHora.getMinutes()).padStart(2, '0')}`;
 
   const disponibilidades = await prisma.disponibilidad.findMany({
     where: {
@@ -364,7 +363,7 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
       where: {
         id: { not: turno.id },
         profesionalId: turno.profesionalId,
-        fechaHora: localDate,
+        fechaHora: nuevaFechaHora,
         estado: { notIn: ['CANCELADO'] },
       },
     });
@@ -376,7 +375,7 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     return tx.turno.update({
       where: { id: turno.id },
       data: {
-        fechaHora: localDate,
+        fechaHora: nuevaFechaHora,
         modalidad: modalidadFinal,
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },
