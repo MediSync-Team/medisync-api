@@ -121,7 +121,7 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
     },
   });
 
-  const slots: { hora: string; disponible: boolean }[] = [];
+  const slotsMap = new Map<string, boolean>();
 
   disponibilidad.forEach((disp) => {
     if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
@@ -134,13 +134,16 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
       const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
 
       const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
-
-      slots.push({ hora: horaStr, disponible: !ocupado });
+      if (!slotsMap.has(horaStr)) {
+        slotsMap.set(horaStr, !ocupado);
+      }
 
       m += 30;
       if (m >= 60) { h++; m -= 60; }
     }
   });
+
+  const slots = Array.from(slotsMap.entries()).map(([hora, disponible]) => ({ hora, disponible }));
 
   res.json(success(slots));
 }));
