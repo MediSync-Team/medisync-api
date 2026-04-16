@@ -3,6 +3,8 @@ import prisma from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
+import { addSseClient, removeSseClient } from '../services/notification.service';
+import { verifyToken } from '../middleware/auth.middleware';
 
 const router = Router();
 const ALLOWED_CHANNELS = ['EMAIL', 'WHATSAPP', 'IN_APP'] as const;
@@ -142,6 +144,86 @@ router.post('/test', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   });
 
   res.json(success({ ok: true, channel }));
+}));
+
+// ── GET /api/notifications/stream ───────────────────────────────────────────
+// SSE endpoint — keeps connection alive and pushes new notifications in real time.
+// EventSource cannot set headers, so we accept the JWT via ?token= query param as fallback.
+
+router.get('/stream', (req: AuthRequest, res) => {
+  // Try Authorization header first, then ?token= query param (needed for EventSource)
+  let userId: string;
+  const authHeader = req.headers.authorization;
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+
+  try {
+    const raw = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : queryToken;
+    if (!raw) { res.status(401).end(); return; }
+    const payload = verifyToken(raw);
+    userId = payload.userId;
+  } catch {
+    res.status(401).end();
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // for nginx proxies
+  res.flushHeaders();
+
+  // Send initial heartbeat so the client knows the connection is live
+  res.write(': connected\n\n');
+
+  addSseClient(userId, res);
+
+  // Heartbeat every 25 s to prevent proxy timeouts
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { /* ignore */ }
+  }, 25_000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    removeSseClient(userId, res);
+  });
+});
+
+// ── GET /api/notifications/inbox ────────────────────────────────────────────
+// Returns the last 50 notifications for the authenticated user.
+router.get('/inbox', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const notifs = await prisma.notificacion.findMany({
+    where: { usuarioId: userId },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+  const unread = notifs.filter(n => !n.leida).length;
+  res.json(success({ notifs, unread }));
+}));
+
+// ── PATCH /api/notifications/:id/read ───────────────────────────────────────
+// Marks a single notification as read.
+router.patch('/:id/read', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { id } = req.params;
+
+  const notif = await prisma.notificacion.findUnique({ where: { id } });
+  if (!notif) throw new AppError(404, 'NOT_FOUND', 'Notificación no encontrada');
+  if (notif.usuarioId !== userId) throw new AppError(403, 'FORBIDDEN', 'Sin permisos');
+
+  const updated = await prisma.notificacion.update({ where: { id }, data: { leida: true } });
+  res.json(success(updated));
+}));
+
+// ── PATCH /api/notifications/read-all ───────────────────────────────────────
+// Marks all unread notifications for the user as read.
+router.patch('/read-all', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { count } = await prisma.notificacion.updateMany({
+    where: { usuarioId: userId, leida: false },
+    data: { leida: true },
+  });
+  res.json(success({ marked: count }));
 }));
 
 export { router as notificationsRouter };

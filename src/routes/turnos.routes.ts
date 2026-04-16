@@ -7,6 +7,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 import { analyzePreconsulta } from '../services/preconsulta.service';
+import { createNotification } from '../services/notification.service';
 
 const router = Router();
 
@@ -330,6 +331,13 @@ router.post(
               linkVideollamada: turnoConRelaciones.linkVideollamada ?? undefined,
             },
           });
+          await createNotification({
+            usuarioId: turnoConRelaciones.paciente.usuarioId,
+            tipo: 'TURNO_RESERVADO',
+            titulo: 'Turno reservado',
+            cuerpo: `Tu turno con Dr/a. ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido} fue reservado para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            link: '/dashboard/paciente',
+          });
         }
 
         // Notificar al profesional
@@ -354,6 +362,13 @@ router.post(
               paciente: pacNombre,
               modalidad: turnoConRelaciones.modalidad,
             },
+          });
+          await createNotification({
+            usuarioId: turnoConRelaciones.profesional.usuarioId,
+            tipo: 'TURNO_RESERVADO',
+            titulo: 'Nuevo turno',
+            cuerpo: `${pacNombre} reservó un turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            link: '/dashboard',
           });
         }
       }
@@ -537,6 +552,13 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
         userPhone: turnoActualizado.paciente.telefono ?? undefined,
         meta: metaBase,
       });
+      await createNotification({
+        usuarioId: turnoActualizado.paciente.usuarioId,
+        tipo: 'TURNO_CANCELADO',
+        titulo: 'Turno cancelado',
+        cuerpo: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
+        link: '/dashboard/paciente',
+      });
     }
 
     // Notificar al profesional si lo canceló el paciente
@@ -556,6 +578,13 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
         userEmail: profUsuario?.email,
         userPhone: turnoActualizado.profesional.telefono || undefined,
         meta: { ...metaBase, paciente: pacNombre },
+      });
+      await createNotification({
+        usuarioId: turnoActualizado.profesional.usuarioId,
+        tipo: 'TURNO_CANCELADO',
+        titulo: 'Turno cancelado',
+        cuerpo: `${pacNombre} canceló su turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
+        link: '/dashboard',
       });
     }
 
@@ -579,6 +608,13 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
       userEmail: turnoActualizado.paciente.email,
       userPhone: turnoActualizado.paciente.telefono ?? undefined,
       meta: metaBase,
+    });
+    await createNotification({
+      usuarioId: turnoActualizado.paciente.usuarioId,
+      tipo: 'TURNO_CONFIRMADO',
+      titulo: 'Turno confirmado',
+      cuerpo: `Tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue confirmado.`,
+      link: '/dashboard/paciente',
     });
   }
 
@@ -862,7 +898,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
   if (turno.paciente?.email) {
     const pacienteCompleto = await prisma.paciente.findFirst({
       where: { email: turno.paciente.email },
-      select: { notifEmail: true, notifWhatsapp: true, telefono: true },
+      select: { usuarioId: true, notifEmail: true, notifWhatsapp: true, telefono: true },
     });
     if (pacienteCompleto) {
       const pacChannels = resolveChannels({
@@ -881,6 +917,13 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
           profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
           especialidad: turno.profesional.especialidad.nombre,
         },
+      });
+      await createNotification({
+        usuarioId: pacienteCompleto.usuarioId,
+        tipo: 'RECETA_EMITIDA',
+        titulo: 'Receta emitida',
+        cuerpo: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta de la consulta del ${turno.fechaHora.toLocaleDateString('es-AR')}.`,
+        link: '/dashboard/paciente',
       });
     }
   }

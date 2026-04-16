@@ -324,3 +324,18 @@ model Resena {
   @@index([pacienteId])
   @@map("resena")
 }
+
+model Notificacion {
+  id        String   @id @default(uuid())
+  usuarioId String   @map("usuario_id")
+  tipo      String
+  titulo    String
+  cuerpo    String
+  leida     Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([usuarioId, leida])
+  @@index([usuarioId, createdAt])
+  @@map("notificacion")
+}
