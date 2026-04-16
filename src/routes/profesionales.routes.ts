@@ -7,7 +7,16 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 const router = Router();
 
 router.get('/', asyncHandler(async (req, res) => {
-  const { especialidad, disponibles, precioMin, precioMax, page = 1, limit = 10 } = req.query;
+  const {
+    especialidad,
+    precioMin,
+    precioMax,
+    modalidad,
+    fecha,
+    orderBy: orderByParam,
+    page = 1,
+    limit = 10,
+  } = req.query;
 
   const where: any = { activo: true };
 
@@ -21,6 +30,35 @@ router.get('/', asyncHandler(async (req, res) => {
     if (precioMax) where.precioConsulta.lte = Number(precioMax);
   }
 
+  // Filter by modalidad: profesional must have at least one active disponibilidad with that modalidad (or AMBOS)
+  if (modalidad && (modalidad === 'PRESENCIAL' || modalidad === 'VIRTUAL')) {
+    where.disponibilidades = {
+      some: {
+        activo: true,
+        modalidad: { in: [String(modalidad), 'AMBOS'] },
+      },
+    };
+  }
+
+  // Filter by fecha: convert to diaSemana and require availability on that day
+  if (fecha) {
+    const [year, month, day] = String(fecha).split('-').map(Number);
+    const diaSemana = new Date(year, month - 1, day).getDay();
+    const dispFilter = { some: { activo: true, diaSemana } };
+    // Merge with existing disponibilidades filter if present
+    if (where.disponibilidades) {
+      where.disponibilidades = { some: { activo: true, diaSemana, modalidad: where.disponibilidades.some.modalidad } };
+    } else {
+      where.disponibilidades = dispFilter;
+    }
+  }
+
+  // Ordering
+  let orderBy: any = { createdAt: 'desc' };
+  if (orderByParam === 'precio_asc')  orderBy = { precioConsulta: 'asc' };
+  if (orderByParam === 'precio_desc') orderBy = { precioConsulta: 'desc' };
+  if (orderByParam === 'nombre_asc')  orderBy = [{ apellido: 'asc' }, { nombre: 'asc' }];
+
   const skip = (Number(page) - 1) * Number(limit);
 
   const [profesionales, total] = await Promise.all([
@@ -32,7 +70,7 @@ router.get('/', asyncHandler(async (req, res) => {
       },
       skip,
       take: Number(limit),
-      orderBy: { createdAt: 'desc' },
+      orderBy,
     }),
     prisma.profesional.count({ where }),
   ]);
