@@ -14,7 +14,7 @@ function getJwtSecret(): string {
 export interface JwtPayload {
   userId: string;
   email: string;
-  rol: 'PROFESIONAL' | 'PACIENTE';
+  rol: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN';
 }
 
 export interface AuthRequest extends Request {
@@ -29,7 +29,7 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, getJwtSecret()) as JwtPayload;
 }
 
-export function authMiddleware(requiredRol?: 'PROFESIONAL' | 'PACIENTE') {
+export function authMiddleware(requiredRol?: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN') {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
 
