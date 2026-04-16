@@ -76,13 +76,22 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
     whereClause.fechaHora = { lt: now };
   }
 
-  const turnos = await prisma.turno.findMany({
-    where: whereClause,
-    include: { profesional: { include: { especialidad: true } } },
-    orderBy: { fechaHora: tipo === 'pasados' ? 'desc' : 'asc' },
-  });
+  const page  = Math.max(1, Number(req.query.page)  || 1);
+  const limit = Math.min(50, Number(req.query.limit) || 10);
+  const skip  = (page - 1) * limit;
 
-  res.json(success(turnos));
+  const [turnos, total] = await Promise.all([
+    prisma.turno.findMany({
+      where: whereClause,
+      include: { profesional: { include: { especialidad: true } } },
+      orderBy: { fechaHora: tipo === 'pasados' ? 'desc' : 'asc' },
+      skip,
+      take: limit,
+    }),
+    prisma.turno.count({ where: whereClause }),
+  ]);
+
+  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
 }));
 
 router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
@@ -101,13 +110,22 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
     if (hasta) where.fechaHora.lte = new Date(String(hasta));
   }
 
-  const turnos = await prisma.turno.findMany({
-    where,
-    include: { paciente: true },
-    orderBy: { fechaHora: 'asc' },
-  });
+  const page  = Math.max(1, Number(req.query.page)  || 1);
+  const limit = Math.min(50, Number(req.query.limit) || 10);
+  const skip  = (page - 1) * limit;
 
-  res.json(success(turnos));
+  const [turnos, total] = await Promise.all([
+    prisma.turno.findMany({
+      where,
+      include: { paciente: true },
+      orderBy: { fechaHora: 'asc' },
+      skip,
+      take: limit,
+    }),
+    prisma.turno.count({ where }),
+  ]);
+
+  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
 }));
 
 router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (req, res) => {
