@@ -59,6 +59,13 @@ enum Genero {
   NO_ESPECIFICADO
 }
 
+enum NivelRiesgoPreconsulta {
+  BAJO
+  MEDIO
+  ALTO
+  URGENTE
+}
+
 // ==================== MODELOS ====================
 
 model Usuario {
@@ -146,6 +153,13 @@ model Paciente {
   dni                  String?
   obraSocial           String?   @map("obra_social")
   fotoUrl              String?   @map("foto_url")
+  antecedentesPersonales String?  @map("antecedentes_personales")
+  antecedentesFamiliares String?  @map("antecedentes_familiares")
+  alergias             String?
+  medicacionActual     String?   @map("medicacion_actual")
+  habitos              String?
+  diagnosticosPrevios  String?   @map("diagnosticos_previos")
+  notasClinicasGenerales String? @map("notas_clinicas_generales")
   aceptaRecordatorios  Boolean   @default(true) @map("acepta_recordatorios")
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
@@ -165,6 +179,17 @@ model Turno {
   duracionMin         Int         @default(30) @map("duracion_min")
   modalidad           Modalidad
   estado              EstadoTurno @default(RESERVADO)
+  preconsultaMotivo   String?     @map("preconsulta_motivo")
+  preconsultaSintomas String?     @map("preconsulta_sintomas")
+  preconsultaEscalaDolor Int?     @map("preconsulta_escala_dolor")
+  preconsultaEscalaAnsiedad Int?  @map("preconsulta_escala_ansiedad")
+  preconsultaInicioSintomas String? @map("preconsulta_inicio_sintomas")
+  preconsultaTemperatura Decimal? @map("preconsulta_temperatura") @db.Decimal(4, 1)
+  preconsultaNotasPaciente String? @map("preconsulta_notas_paciente")
+  preconsultaRiesgo   NivelRiesgoPreconsulta? @map("preconsulta_riesgo")
+  preconsultaFlags    Json?       @map("preconsulta_flags")
+  preconsultaResumen  String?     @map("preconsulta_resumen")
+  preconsultaCompletadaAt DateTime? @map("preconsulta_completada_at")
   linkVideollamada    String?     @map("link_videollamada")
   notasCancelacion    String?     @map("notas_cancelacion")
   createdAt           DateTime    @default(now()) @map("created_at")
@@ -174,6 +199,7 @@ model Turno {
   paciente     Paciente?   @relation(fields: [pacienteId], references: [id], onDelete: SetNull)
 
   evolucion    Evolucion?
+  recetaIndicacion RecetaIndicacion?
   archivos     Archivo[]
   pago         Pago?
 
@@ -182,6 +208,26 @@ model Turno {
   @@index([pacienteId])
   @@index([estado, fechaHora])
   @@map("turno")
+}
+
+model RecetaIndicacion {
+  id                 String   @id @default(uuid())
+  turnoId            String   @unique @map("turno_id")
+  diagnostico        String
+  planTratamiento    String?  @map("plan_tratamiento")
+  medicamentos       String?
+  indicaciones       String
+  estudiosSolicitados String? @map("estudios_solicitados")
+  proximoControl     String?  @map("proximo_control")
+  advertencias       String?
+  observaciones      String?
+  emitidaAt          DateTime @default(now()) @map("emitida_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@map("receta_indicacion")
 }
 
 model Evolucion {

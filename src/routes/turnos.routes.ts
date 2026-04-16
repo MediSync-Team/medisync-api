@@ -6,6 +6,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
+import { analyzePreconsulta } from '../services/preconsulta.service';
 
 const router = Router();
 
@@ -43,6 +44,16 @@ function canCancelTurno(turnoFechaHora: Date): boolean {
   const cancellationWindowHours = Number(process.env.CANCELLATION_WINDOW_HOURS || 24);
   const diffMs = turnoFechaHora.getTime() - Date.now();
   return diffMs >= cancellationWindowHours * 60 * 60 * 1000;
+}
+
+function assertPreconsultaEditable(turno: { fechaHora: Date; estado: string }) {
+  if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
+    throw new AppError(400, 'INVALID_STATE', 'Solo se puede completar preconsulta en turnos reservados o confirmados');
+  }
+
+  if (turno.fechaHora.getTime() <= Date.now()) {
+    throw new AppError(422, 'APPOINTMENT_ALREADY_STARTED', 'La preconsulta solo se puede completar antes del turno');
+  }
 }
 
 router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
@@ -471,6 +482,141 @@ router.get('/:id/evolucion', authMiddleware(), asyncHandler(async (req: AuthRequ
   res.json(success(evolucion));
 }));
 
+router.get('/:id/receta', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  await assertTurnoAccess(req.params.id, req);
+
+  const receta = await prisma.recetaIndicacion.findUnique({
+    where: { turnoId: req.params.id },
+  });
+
+  res.json(success(receta));
+}));
+
+router.get('/:id/preconsulta', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const { turno } = await assertTurnoAccess(req.params.id, req);
+
+  res.json(success({
+    motivo: turno.preconsultaMotivo,
+    sintomas: turno.preconsultaSintomas,
+    escalaDolor: turno.preconsultaEscalaDolor,
+    escalaAnsiedad: turno.preconsultaEscalaAnsiedad,
+    inicioSintomas: turno.preconsultaInicioSintomas,
+    temperatura: turno.preconsultaTemperatura ? Number(turno.preconsultaTemperatura) : null,
+    notasPaciente: turno.preconsultaNotasPaciente,
+    riesgo: turno.preconsultaRiesgo,
+    flags: turno.preconsultaFlags,
+    resumen: turno.preconsultaResumen,
+    completadaAt: turno.preconsultaCompletadaAt,
+  }));
+}));
+
+router.put('/:id/preconsulta', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const {
+    motivo,
+    sintomas,
+    escalaDolor,
+    escalaAnsiedad,
+    inicioSintomas,
+    temperatura,
+    notasPaciente,
+  } = req.body;
+
+  const { turno, isPacienteOwner } = await assertTurnoAccess(req.params.id, req);
+
+  if (!isPacienteOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Solo el paciente del turno puede completar la preconsulta');
+  }
+
+  assertPreconsultaEditable(turno);
+
+  if (typeof motivo !== 'string' || motivo.trim().length < 5 || motivo.trim().length > 400) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El motivo debe tener entre 5 y 400 caracteres');
+  }
+
+  if (typeof sintomas !== 'string' || sintomas.trim().length < 5 || sintomas.trim().length > 1200) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Los sintomas deben tener entre 5 y 1200 caracteres');
+  }
+
+  if (!Number.isInteger(escalaDolor) || escalaDolor < 0 || escalaDolor > 10) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'La escala de dolor debe estar entre 0 y 10');
+  }
+
+  if (!Number.isInteger(escalaAnsiedad) || escalaAnsiedad < 0 || escalaAnsiedad > 10) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'La escala de ansiedad debe estar entre 0 y 10');
+  }
+
+  const inicioNormalizado = typeof inicioSintomas === 'string' && inicioSintomas.trim().length > 0
+    ? inicioSintomas.trim().slice(0, 80)
+    : null;
+
+  const notasNormalizadas = typeof notasPaciente === 'string' && notasPaciente.trim().length > 0
+    ? notasPaciente.trim().slice(0, 2000)
+    : null;
+
+  let temperaturaNormalizada: number | null = null;
+  if (temperatura !== undefined && temperatura !== null && temperatura !== '') {
+    if (typeof temperatura !== 'number' || Number.isNaN(temperatura) || temperatura < 34 || temperatura > 43) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La temperatura debe estar entre 34 y 43');
+    }
+    temperaturaNormalizada = Math.round(temperatura * 10) / 10;
+  }
+
+  const analysis = analyzePreconsulta({
+    motivo: motivo.trim(),
+    sintomas: sintomas.trim(),
+    escalaDolor,
+    escalaAnsiedad,
+    inicioSintomas: inicioNormalizado,
+    temperatura: temperaturaNormalizada,
+    notasPaciente: notasNormalizadas,
+  });
+
+  const updated = await prisma.turno.update({
+    where: { id: turno.id },
+    data: {
+      preconsultaMotivo: motivo.trim(),
+      preconsultaSintomas: sintomas.trim(),
+      preconsultaEscalaDolor: escalaDolor,
+      preconsultaEscalaAnsiedad: escalaAnsiedad,
+      preconsultaInicioSintomas: inicioNormalizado,
+      preconsultaTemperatura: temperaturaNormalizada,
+      preconsultaNotasPaciente: notasNormalizadas,
+      preconsultaRiesgo: analysis.riesgo,
+      preconsultaFlags: analysis.flags,
+      preconsultaResumen: analysis.resumen,
+      preconsultaCompletadaAt: new Date(),
+    },
+    select: {
+      id: true,
+      preconsultaMotivo: true,
+      preconsultaSintomas: true,
+      preconsultaEscalaDolor: true,
+      preconsultaEscalaAnsiedad: true,
+      preconsultaInicioSintomas: true,
+      preconsultaTemperatura: true,
+      preconsultaNotasPaciente: true,
+      preconsultaRiesgo: true,
+      preconsultaFlags: true,
+      preconsultaResumen: true,
+      preconsultaCompletadaAt: true,
+    },
+  });
+
+  res.json(success({
+    motivo: updated.preconsultaMotivo,
+    sintomas: updated.preconsultaSintomas,
+    escalaDolor: updated.preconsultaEscalaDolor,
+    escalaAnsiedad: updated.preconsultaEscalaAnsiedad,
+    inicioSintomas: updated.preconsultaInicioSintomas,
+    temperatura: updated.preconsultaTemperatura ? Number(updated.preconsultaTemperatura) : null,
+    notasPaciente: updated.preconsultaNotasPaciente,
+    riesgo: updated.preconsultaRiesgo,
+    flags: updated.preconsultaFlags,
+    resumen: updated.preconsultaResumen,
+    completadaAt: updated.preconsultaCompletadaAt,
+  }));
+}));
+
 router.post('/:id/evolucion', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const { contenido } = req.body;
 
@@ -498,6 +644,110 @@ router.post('/:id/evolucion', authMiddleware('PROFESIONAL'), asyncHandler(async 
   });
 
   res.status(201).json(success(evolucion));
+}));
+
+router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const {
+    diagnostico,
+    planTratamiento,
+    medicamentos,
+    indicaciones,
+    estudiosSolicitados,
+    proximoControl,
+    advertencias,
+    observaciones,
+  } = req.body;
+
+  const turno = await prisma.turno.findUnique({
+    where: { id: req.params.id },
+    include: {
+      profesional: { select: { usuarioId: true, nombre: true, apellido: true, matricula: true, especialidad: { select: { nombre: true } } } },
+      paciente: { select: { nombre: true, apellido: true, email: true } },
+    },
+  });
+
+  if (!turno) {
+    throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+  }
+
+  if (turno.profesional.usuarioId !== req.user!.userId) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para emitir indicaciones en este turno');
+  }
+
+  if (!['CONFIRMADO', 'COMPLETADO'].includes(turno.estado)) {
+    throw new AppError(400, 'INVALID_STATE', 'Solo se puede emitir receta/indicaciones en turnos confirmados o completados');
+  }
+
+  if (typeof diagnostico !== 'string' || diagnostico.trim().length < 5 || diagnostico.trim().length > 2000) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El diagnostico debe tener entre 5 y 2000 caracteres');
+  }
+
+  if (typeof indicaciones !== 'string' || indicaciones.trim().length < 5 || indicaciones.trim().length > 4000) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Las indicaciones deben tener entre 5 y 4000 caracteres');
+  }
+
+  const normalize = (value: unknown, max: number) => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return trimmed.slice(0, max);
+  };
+
+  const receta = await prisma.recetaIndicacion.upsert({
+    where: { turnoId: req.params.id },
+    update: {
+      diagnostico: diagnostico.trim(),
+      planTratamiento: normalize(planTratamiento, 4000),
+      medicamentos: normalize(medicamentos, 4000),
+      indicaciones: indicaciones.trim(),
+      estudiosSolicitados: normalize(estudiosSolicitados, 4000),
+      proximoControl: normalize(proximoControl, 200),
+      advertencias: normalize(advertencias, 2000),
+      observaciones: normalize(observaciones, 3000),
+      emitidaAt: new Date(),
+    },
+    create: {
+      turnoId: req.params.id,
+      diagnostico: diagnostico.trim(),
+      planTratamiento: normalize(planTratamiento, 4000),
+      medicamentos: normalize(medicamentos, 4000),
+      indicaciones: indicaciones.trim(),
+      estudiosSolicitados: normalize(estudiosSolicitados, 4000),
+      proximoControl: normalize(proximoControl, 200),
+      advertencias: normalize(advertencias, 2000),
+      observaciones: normalize(observaciones, 3000),
+      emitidaAt: new Date(),
+    },
+  });
+
+  const recetaTexto = [
+    `MediSync - Receta e indicaciones`,
+    `Profesional: Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+    `Especialidad: ${turno.profesional.especialidad.nombre}`,
+    turno.profesional.matricula ? `Matricula: ${turno.profesional.matricula}` : null,
+    `Paciente: ${turno.paciente ? `${turno.paciente.nombre} ${turno.paciente.apellido}` : 'Sin cuenta'}`,
+    `Fecha atencion: ${turno.fechaHora.toLocaleDateString('es-AR')} ${turno.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}`,
+    '',
+    `Diagnostico:`,
+    receta.diagnostico,
+    '',
+    receta.planTratamiento ? `Plan de tratamiento:\n${receta.planTratamiento}\n` : null,
+    receta.medicamentos ? `Medicamentos:\n${receta.medicamentos}\n` : null,
+    `Indicaciones:`,
+    receta.indicaciones,
+    '',
+    receta.estudiosSolicitados ? `Estudios solicitados:\n${receta.estudiosSolicitados}\n` : null,
+    receta.proximoControl ? `Proximo control: ${receta.proximoControl}` : null,
+    receta.advertencias ? `Advertencias: ${receta.advertencias}` : null,
+    receta.observaciones ? `Observaciones: ${receta.observaciones}` : null,
+    '',
+    `Emitida: ${receta.emitidaAt.toLocaleString('es-AR')}`,
+  ].filter(Boolean).join('\n');
+
+  res.status(201).json(success({
+    receta,
+    shareText: recetaTexto,
+  }));
 }));
 
 export { router as turnosRouter };
