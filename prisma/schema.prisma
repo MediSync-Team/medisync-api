@@ -123,6 +123,7 @@ model Profesional {
   disponibilidades Disponibilidad[]
   turnos           Turno[]
   listaEspera      ListaEspera[]
+  resenas          Resena[]
 
   @@map("profesional")
 }
@@ -173,6 +174,7 @@ model Paciente {
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
   turnos    Turno[]
   listaEspera ListaEspera[]
+  resenas   Resena[]
 
   @@map("paciente")
 }
@@ -208,6 +210,7 @@ model Turno {
   recetaIndicacion RecetaIndicacion?
   archivos     Archivo[]
   pago         Pago?
+  resena       Resena?
 
   @@unique([profesionalId, fechaHora])
   @@index([profesionalId, fechaHora])
@@ -300,4 +303,23 @@ model ListaEspera {
   @@index([pacienteId, estado])
   @@unique([profesionalId, pacienteId, fecha, modalidad, estado])
   @@map("lista_espera")
+}
+
+model Resena {
+  id            String   @id @default(uuid())
+  turnoId       String   @unique @map("turno_id")
+  profesionalId String   @map("profesional_id")
+  pacienteId    String   @map("paciente_id")
+  rating        Int
+  comentario    String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  turno       Turno       @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+  paciente    Paciente    @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+
+  @@index([profesionalId])
+  @@index([pacienteId])
+  @@map("resena")
 }

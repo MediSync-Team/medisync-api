@@ -67,6 +67,7 @@ router.get('/', asyncHandler(async (req, res) => {
       include: {
         especialidad: true,
         disponibilidades: { where: { activo: true } },
+        _count: { select: { resenas: true } },
       },
       skip,
       take: Number(limit),
@@ -75,26 +76,56 @@ router.get('/', asyncHandler(async (req, res) => {
     prisma.profesional.count({ where }),
   ]);
 
+  // Attach average rating per profesional
+  const ids = profesionales.map((p) => p.id);
+  const ratings = await prisma.resena.groupBy({
+    by: ['profesionalId'],
+    where: { profesionalId: { in: ids } },
+    _avg: { rating: true },
+    _count: { rating: true },
+  });
+  const ratingMap = new Map(ratings.map((r) => [r.profesionalId, r]));
+
+  const profesionalesConRating = profesionales.map((p) => {
+    const r = ratingMap.get(p.id);
+    return {
+      ...p,
+      ratingPromedio: r ? Number(r._avg.rating?.toFixed(1)) : null,
+      totalResenas: r ? r._count.rating : 0,
+    };
+  });
+
   res.json(success({
-    profesionales,
+    profesionales: profesionalesConRating,
     pagination: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
   }));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {
-  const profesional = await prisma.profesional.findUnique({
-    where: { id: req.params.id },
-    include: {
-      especialidad: true,
-      disponibilidades: { where: { activo: true } },
-    },
-  });
+  const [profesional, ratingAgg] = await Promise.all([
+    prisma.profesional.findUnique({
+      where: { id: req.params.id },
+      include: {
+        especialidad: true,
+        disponibilidades: { where: { activo: true } },
+      },
+    }),
+    prisma.resena.aggregate({
+      where: { profesionalId: req.params.id },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+  ]);
 
   if (!profesional) {
     throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
   }
 
-  res.json(success(profesional));
+  res.json(success({
+    ...profesional,
+    ratingPromedio: ratingAgg._avg.rating ? Number(ratingAgg._avg.rating.toFixed(1)) : null,
+    totalResenas: ratingAgg._count.rating,
+  }));
 }));
 
 router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
