@@ -118,11 +118,22 @@ router.post('/test', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     return;
   }
 
+  // Fetch phone number so WhatsApp test can work
+  let userPhone: string | null | undefined;
+  if (req.user.rol === 'PACIENTE') {
+    const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user.userId }, select: { telefono: true } });
+    userPhone = paciente?.telefono;
+  } else {
+    const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user.userId }, select: { telefono: true } });
+    userPhone = profesional?.telefono;
+  }
+
   await sendNotification([channel as AllowedChannel], {
     event: 'PRUEBA',
     title: 'Prueba de notificación',
     message: text,
     userEmail: req.user.email,
+    userPhone: userPhone ?? undefined,
     meta: {
       requestedBy: req.user.userId,
       channel,
