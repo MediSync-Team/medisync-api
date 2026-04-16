@@ -7,7 +7,6 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 import { analyzePreconsulta } from '../services/preconsulta.service';
-import { createDailyRoom, createDailyToken, roomNameFromUrl } from '../services/daily.service';
 
 const router = Router();
 
@@ -265,16 +264,9 @@ router.post(
       }
     }
 
-      // Create Daily room before the transaction so we don't hold it open during API calls
-      let linkVideollamada: string | null = null;
-      if (modalidad === 'VIRTUAL') {
-        // Room expires 2 hours after the turno starts
-        const roomExpiry = new Date(fechaHoraDate.getTime() + 2 * 60 * 60 * 1000);
-        // Use a short random slug as room name (Daily room names must be ≤ 40 chars)
-        const roomName = `ms-${Math.random().toString(36).substring(2, 10)}`;
-        const room = await createDailyRoom(roomName, roomExpiry);
-        linkVideollamada = room?.url ?? `https://meet.jit.si/MediSync-${roomName}`;
-      }
+      const linkVideollamada = modalidad === 'VIRTUAL'
+        ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
+        : null;
 
       const result = await prisma.$transaction(async (tx) => {
       const existente = await tx.turno.findFirst({
@@ -901,11 +893,10 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 
 /**
  * GET /turnos/:id/video-token
- * Returns a short-lived Daily meeting token for the authenticated participant.
- * The profesional gets owner privileges; the paciente gets a regular participant token.
+ * Returns the Jitsi join URL for the authenticated participant.
  */
 router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
-  const { turno, isProfesionalOwner, isPacienteOwner } = await assertTurnoAccess(req.params.id, req);
+  const { turno } = await assertTurnoAccess(req.params.id, req);
 
   if (turno.modalidad !== 'VIRTUAL') {
     throw new AppError(400, 'NOT_VIRTUAL', 'Este turno no es virtual');
@@ -919,27 +910,7 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
     throw new AppError(400, 'INVALID_STATE', 'Solo se puede unir a turnos reservados o confirmados');
   }
 
-  const roomName = roomNameFromUrl(turno.linkVideollamada);
-
-  // Token valid from now until turno + 2 hours
-  const exp = new Date(turno.fechaHora.getTime() + 2 * 60 * 60 * 1000);
-
-  // Determine display name
-  let userName = 'Participante';
-  if (isProfesionalOwner) {
-    const prof = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-    userName = prof ? `Dr/a. ${prof.nombre} ${prof.apellido}` : 'Profesional';
-  } else if (isPacienteOwner) {
-    const pac = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-    userName = pac ? `${pac.nombre} ${pac.apellido}` : 'Paciente';
-  }
-
-  const tokenData = await createDailyToken(roomName, isProfesionalOwner, exp, userName);
-
-  const joinUrl = tokenData ? tokenData.joinUrl : turno.linkVideollamada;
-  const token   = tokenData ? tokenData.token   : null;
-
-  res.json(success({ joinUrl, token, roomName }));
+  res.json(success({ joinUrl: turno.linkVideollamada, token: null }));
 }));
 
 export { router as turnosRouter };
