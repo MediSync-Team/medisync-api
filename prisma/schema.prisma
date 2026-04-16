@@ -111,6 +111,8 @@ model Profesional {
   lugarAtencion   String?  @map("lugar_atencion")
   fotoUrl         String?  @map("foto_url")
   activo          Boolean  @default(true)
+  notifEmail      Boolean  @default(true) @map("notif_email")
+  notifWhatsapp   Boolean  @default(false) @map("notif_whatsapp")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -161,6 +163,10 @@ model Paciente {
   diagnosticosPrevios  String?   @map("diagnosticos_previos")
   notasClinicasGenerales String? @map("notas_clinicas_generales")
   aceptaRecordatorios  Boolean   @default(true) @map("acepta_recordatorios")
+  notifEmail           Boolean   @default(true) @map("notif_email")
+  notifWhatsapp        Boolean   @default(false) @map("notif_whatsapp")
+  notifRecordatorio24h Boolean   @default(true) @map("notif_recordatorio_24h")
+  notifRecordatorio2h  Boolean   @default(false) @map("notif_recordatorio_2h")
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
 

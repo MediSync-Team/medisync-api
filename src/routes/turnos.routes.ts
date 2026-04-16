@@ -4,7 +4,7 @@ import { EstadoTurno } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
-import { sendNotification } from '../utils/notifications';
+import { sendNotification, resolveChannels } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 import { analyzePreconsulta } from '../services/preconsulta.service';
 
@@ -291,17 +291,53 @@ router.post(
           });
         }
 
-        await sendNotification(['EMAIL', 'WHATSAPP'], {
-          title: 'Turno reservado',
-          message: `Tu turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')} fue reservado correctamente.`,
-          userEmail: turnoConRelaciones.paciente?.email,
-          userPhone: turnoConRelaciones.paciente?.telefono,
-          meta: {
-            turnoId: turnoConRelaciones.id,
-            profesionalId: turnoConRelaciones.profesionalId,
-            estado: turnoConRelaciones.estado,
-          },
-        });
+        // Notificar al paciente
+        if (turnoConRelaciones.paciente) {
+          const pacChannels = resolveChannels({
+            notifEmail: turnoConRelaciones.paciente.notifEmail,
+            notifWhatsapp: turnoConRelaciones.paciente.notifWhatsapp,
+          });
+          await sendNotification(pacChannels, {
+            event: 'TURNO_RESERVADO',
+            title: 'Turno reservado correctamente',
+            message: `Tu turno con ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido} fue reservado correctamente.`,
+            userEmail: turnoConRelaciones.paciente.email,
+            userPhone: turnoConRelaciones.paciente.telefono ?? undefined,
+            meta: {
+              turnoId: turnoConRelaciones.id,
+              fechaHora: turnoConRelaciones.fechaHora.toISOString(),
+              profesional: `Dr/a. ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido}`,
+              modalidad: turnoConRelaciones.modalidad,
+              lugarAtencion: turnoConRelaciones.profesional.lugarAtencion ?? undefined,
+              linkVideollamada: turnoConRelaciones.linkVideollamada ?? undefined,
+            },
+          });
+        }
+
+        // Notificar al profesional
+        {
+          const profUsuario = await prisma.usuario.findUnique({ where: { id: turnoConRelaciones.profesional.usuarioId } });
+          const profChannels = resolveChannels({
+            notifEmail: turnoConRelaciones.profesional.notifEmail,
+            notifWhatsapp: turnoConRelaciones.profesional.notifWhatsapp,
+          });
+          const pacNombre = turnoConRelaciones.paciente
+            ? `${turnoConRelaciones.paciente.nombre} ${turnoConRelaciones.paciente.apellido}`
+            : 'Paciente sin cuenta';
+          await sendNotification(profChannels, {
+            event: 'TURNO_RESERVADO',
+            title: 'Nuevo turno reservado',
+            message: `${pacNombre} reservó un turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            userEmail: profUsuario?.email,
+            userPhone: turnoConRelaciones.profesional.telefono || undefined,
+            meta: {
+              turnoId: turnoConRelaciones.id,
+              fechaHora: turnoConRelaciones.fechaHora.toISOString(),
+              paciente: pacNombre,
+              modalidad: turnoConRelaciones.modalidad,
+            },
+          });
+        }
       }
 
       res.status(201).json(success({ turno: result, linkPago: null }));
@@ -398,17 +434,27 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     });
   });
 
-  await sendNotification(['EMAIL', 'WHATSAPP'], {
-    title: 'Turno reprogramado',
-    message: `Tu turno fue reprogramado para el ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
-    userEmail: turnoActualizado.paciente?.email,
-    userPhone: turnoActualizado.paciente?.telefono,
-    meta: {
-      turnoId: turnoActualizado.id,
-      profesionalId: turnoActualizado.profesionalId,
-      modalidad: turnoActualizado.modalidad,
-    },
-  });
+  if (turnoActualizado.paciente) {
+    const pacChannels = resolveChannels({
+      notifEmail: turnoActualizado.paciente.notifEmail,
+      notifWhatsapp: turnoActualizado.paciente.notifWhatsapp,
+    });
+    await sendNotification(pacChannels, {
+      event: 'TURNO_REPROGRAMADO',
+      title: 'Turno reprogramado',
+      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue reprogramado.`,
+      userEmail: turnoActualizado.paciente.email,
+      userPhone: turnoActualizado.paciente.telefono ?? undefined,
+      meta: {
+        turnoId: turnoActualizado.id,
+        fechaHora: turnoActualizado.fechaHora.toISOString(),
+        profesional: `Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido}`,
+        modalidad: turnoActualizado.modalidad,
+        lugarAtencion: turnoActualizado.profesional.lugarAtencion ?? undefined,
+        linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
+      },
+    });
+  }
 
   res.json(success(turnoActualizado));
 }));
@@ -444,27 +490,77 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     data: { estado, notasCancelacion },
     include: {
       paciente: true,
-      profesional: true,
+      profesional: { include: { especialidad: true } },
     },
   });
 
+  const metaBase = {
+    turnoId: turnoActualizado.id,
+    fechaHora: turnoActualizado.fechaHora.toISOString(),
+    profesional: `Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido}`,
+    especialidad: turnoActualizado.profesional.especialidad.nombre,
+    modalidad: turnoActualizado.modalidad,
+    lugarAtencion: turnoActualizado.profesional.lugarAtencion ?? undefined,
+    linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
+  };
+
   if (estado === 'CANCELADO') {
-    await sendNotification(['EMAIL', 'WHATSAPP'], {
-      title: 'Turno cancelado',
-      message: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
-      userEmail: turnoActualizado.paciente?.email,
-      userPhone: turnoActualizado.paciente?.telefono,
-      meta: {
-        turnoId: turnoActualizado.id,
-        profesionalId: turnoActualizado.profesionalId,
-      },
-    });
+    // Notificar al paciente
+    if (turnoActualizado.paciente) {
+      const pacChannels = resolveChannels({
+        notifEmail: turnoActualizado.paciente.notifEmail,
+        notifWhatsapp: turnoActualizado.paciente.notifWhatsapp,
+      });
+      await sendNotification(pacChannels, {
+        event: 'TURNO_CANCELADO',
+        title: 'Turno cancelado',
+        message: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
+        userEmail: turnoActualizado.paciente.email,
+        userPhone: turnoActualizado.paciente.telefono ?? undefined,
+        meta: metaBase,
+      });
+    }
+
+    // Notificar al profesional si lo canceló el paciente
+    if (isPacienteOwner) {
+      const profUsuario = await prisma.usuario.findUnique({ where: { id: turnoActualizado.profesional.usuarioId } });
+      const profChannels = resolveChannels({
+        notifEmail: turnoActualizado.profesional.notifEmail,
+        notifWhatsapp: turnoActualizado.profesional.notifWhatsapp,
+      });
+      const pacNombre = turnoActualizado.paciente
+        ? `${turnoActualizado.paciente.nombre} ${turnoActualizado.paciente.apellido}`
+        : 'Paciente sin cuenta';
+      await sendNotification(profChannels, {
+        event: 'TURNO_CANCELADO',
+        title: 'Turno cancelado por el paciente',
+        message: `${pacNombre} canceló su turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
+        userEmail: profUsuario?.email,
+        userPhone: turnoActualizado.profesional.telefono || undefined,
+        meta: { ...metaBase, paciente: pacNombre },
+      });
+    }
 
     await notifyWaitlistForReleasedSlot({
       profesionalId: turnoActualizado.profesionalId,
       fechaHora: turnoActualizado.fechaHora,
       modalidad: turnoActualizado.modalidad as 'PRESENCIAL' | 'VIRTUAL',
       turnoId: turnoActualizado.id,
+    });
+  }
+
+  if (estado === 'CONFIRMADO' && turnoActualizado.paciente) {
+    const pacChannels = resolveChannels({
+      notifEmail: turnoActualizado.paciente.notifEmail,
+      notifWhatsapp: turnoActualizado.paciente.notifWhatsapp,
+    });
+    await sendNotification(pacChannels, {
+      event: 'TURNO_CONFIRMADO',
+      title: 'Turno confirmado',
+      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue confirmado.`,
+      userEmail: turnoActualizado.paciente.email,
+      userPhone: turnoActualizado.paciente.telefono ?? undefined,
+      meta: metaBase,
     });
   }
 
@@ -743,6 +839,33 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
     '',
     `Emitida: ${receta.emitidaAt.toLocaleString('es-AR')}`,
   ].filter(Boolean).join('\n');
+
+  // Notificar al paciente que la receta fue emitida
+  if (turno.paciente?.email) {
+    const pacienteCompleto = await prisma.paciente.findFirst({
+      where: { email: turno.paciente.email },
+      select: { notifEmail: true, notifWhatsapp: true, telefono: true },
+    });
+    if (pacienteCompleto) {
+      const pacChannels = resolveChannels({
+        notifEmail: pacienteCompleto.notifEmail,
+        notifWhatsapp: pacienteCompleto.notifWhatsapp,
+      });
+      await sendNotification(pacChannels, {
+        event: 'RECETA_EMITIDA',
+        title: 'Tu receta fue emitida',
+        message: `${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta/indicaciones de la consulta del ${turno.fechaHora.toLocaleDateString('es-AR')}.`,
+        userEmail: turno.paciente.email,
+        userPhone: pacienteCompleto.telefono ?? undefined,
+        meta: {
+          turnoId: turno.id,
+          fechaHora: turno.fechaHora.toISOString(),
+          profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+          especialidad: turno.profesional.especialidad.nombre,
+        },
+      });
+    }
+  }
 
   res.status(201).json(success({
     receta,

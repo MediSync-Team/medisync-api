@@ -73,8 +73,9 @@ export async function notifyWaitlistForReleasedSlot(params: {
   });
 
   await sendNotification(['EMAIL', 'WHATSAPP'], {
-    title: 'Se libero un turno',
-    message: `Se libero un turno para ${params.fechaHora.toLocaleDateString('es-AR')} a las ${params.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}. Reservalo desde MediSync antes de que se ocupe.`,
+    event: 'LISTA_ESPERA_NOTIFICADA',
+    title: '¡Se liberó un turno!',
+    message: `Se liberó un turno para el ${params.fechaHora.toLocaleDateString('es-AR')} a las ${params.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}. Reservalo desde MediSync antes de que se ocupe.`,
     userEmail: candidato.paciente.email,
     userPhone: candidato.paciente.telefono,
     meta: {
@@ -82,6 +83,7 @@ export async function notifyWaitlistForReleasedSlot(params: {
       profesionalId: params.profesionalId,
       listaEsperaId: candidato.id,
       modalidad: params.modalidad,
+      fechaHora: params.fechaHora.toISOString(),
     },
   });
 }

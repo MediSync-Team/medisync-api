@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { generateToken, authMiddleware } from '../middleware/auth.middleware';
 import { asyncHandler, success, error, AppError } from '../utils/response';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
@@ -70,6 +71,18 @@ router.post(
     });
 
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
+
+    // Email de bienvenida (fire-and-forget)
+    const displayName = rol === 'PROFESIONAL'
+      ? `Dr/a. ${nombre} ${apellido}`
+      : `${nombre} ${apellido}`;
+    sendNotification(['EMAIL'], {
+      event: 'BIENVENIDA',
+      title: `¡Bienvenido/a a MediSync, ${nombre}!`,
+      message: `Tu cuenta fue creada exitosamente. ${rol === 'PROFESIONAL' ? 'Ya podés configurar tu disponibilidad y empezar a recibir turnos.' : 'Ya podés buscar profesionales y reservar tu primer turno.'}`,
+      userEmail: email,
+      meta: { nombre: displayName, rol },
+    }).catch((err) => console.error('[auth] welcome email error:', err));
 
     res.status(201).json(success({ token, user: { id: user.id, email: user.email, rol: user.rol } }));
   })
