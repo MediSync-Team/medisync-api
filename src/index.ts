@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -6,6 +7,8 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import cron from 'node-cron';
+import { WebSocketServer } from 'ws';
+import { handleVideoConnection } from './services/video-room.service';
 import { authRouter } from './routes/auth.routes';
 import { especialidadesRouter } from './routes/especialidades.routes';
 import { profesionalesRouter } from './routes/profesionales.routes';
@@ -93,9 +96,24 @@ app.use('/api/admin', adminRouter);
 
 app.use(errorHandler);
 
-app.listen(PORT, () => {
+// ── HTTP server + WebSocket signaling ──────────────────────────────────────
+const httpServer = http.createServer(app);
+
+const wss = new WebSocketServer({ server: httpServer, path: '/ws/video' });
+wss.on('connection', (ws, req) => {
+  try {
+    const url = new URL(req.url ?? '', 'http://localhost');
+    const ticket = url.searchParams.get('ticket') ?? '';
+    handleVideoConnection(ws, ticket);
+  } catch {
+    ws.close(4000, 'Bad request');
+  }
+});
+
+httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📚 API: http://localhost:${PORT}/api`);
+  console.log(`📹 Video WS: ws://localhost:${PORT}/ws/video`);
 });
 
 cron.schedule('*/30 * * * *', async () => {

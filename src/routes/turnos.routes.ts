@@ -8,6 +8,7 @@ import { sendNotification, resolveChannels } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 import { analyzePreconsulta } from '../services/preconsulta.service';
 import { createNotification } from '../services/notification.service';
+import { issueVideoTicket } from '../services/video-room.service';
 
 const router = Router();
 
@@ -1003,7 +1004,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 
 /**
  * GET /turnos/:id/video-token
- * Returns the Jitsi join URL for the authenticated participant.
+ * Issues a short-lived WebSocket ticket for the native video room.
  */
 router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { turno } = await assertTurnoAccess(req.params.id, req);
@@ -1012,15 +1013,12 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
     throw new AppError(400, 'NOT_VIRTUAL', 'Este turno no es virtual');
   }
 
-  if (!turno.linkVideollamada) {
-    throw new AppError(404, 'NO_ROOM', 'Este turno no tiene sala de videollamada asignada');
-  }
-
   if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
     throw new AppError(400, 'INVALID_STATE', 'Solo se puede unir a turnos reservados o confirmados');
   }
 
-  res.json(success({ joinUrl: turno.linkVideollamada, token: null }));
+  const ticket = issueVideoTicket(turno.id, req.user!.userId);
+  res.json(success({ ticket, roomId: turno.id }));
 }));
 
 export { router as turnosRouter };
