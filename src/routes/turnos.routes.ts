@@ -377,7 +377,7 @@ router.post(
   })
 );
 
-router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { fechaHora, modalidad } = req.body;
 
   if (!fechaHora) {
@@ -398,14 +398,23 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     throw new AppError(400, 'VALIDATION_ERROR', 'Modalidad invalida');
   }
 
-  const { turno, isPacienteOwner } = await assertTurnoAccess(req.params.id, req);
+  const { turno, isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
 
-  if (!isPacienteOwner) {
-    throw new AppError(403, 'FORBIDDEN', 'Solo el paciente puede reprogramar este turno');
+  if (!isPacienteOwner && !isProfesionalOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para reprogramar este turno');
   }
 
   if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
     throw new AppError(400, 'INVALID_STATE', 'Solo se pueden reprogramar turnos reservados o confirmados');
+  }
+
+  // Pacientes deben respetar la ventana de cancelación; profesionales pueden reprogramar sin restricción de tiempo
+  if (isPacienteOwner && !canCancelTurno(turno.fechaHora)) {
+    throw new AppError(
+      422,
+      'RESCHEDULE_WINDOW_EXCEEDED',
+      `Solo podes reprogramar turnos con al menos ${process.env.CANCELLATION_WINDOW_HOURS || 24} horas de anticipacion`
+    );
   }
 
   const modalidadFinal = nuevaModalidad || turno.modalidad;
@@ -430,14 +439,6 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
   }
 
-  if (!canCancelTurno(turno.fechaHora)) {
-    throw new AppError(
-      422,
-      'RESCHEDULE_WINDOW_EXCEEDED',
-      `Solo podes reprogramar turnos con al menos ${process.env.CANCELLATION_WINDOW_HOURS || 24} horas de anticipacion`
-    );
-  }
-
   const turnoActualizado = await prisma.$transaction(async (tx) => {
     const conflicto = await tx.turno.findFirst({
       where: {
@@ -460,24 +461,29 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },
       include: {
-        paciente: true,
+        paciente: { include: { usuario: { select: { id: true } } } },
         profesional: true,
         pago: true,
       },
     });
   });
 
+  // Notificar al paciente
   if (turnoActualizado.paciente) {
+    const pac = turnoActualizado.paciente;
+    const who = isProfesionalOwner
+      ? `Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido}`
+      : 'vos';
     const pacChannels = resolveChannels({
-      notifEmail: turnoActualizado.paciente.notifEmail,
-      notifWhatsapp: turnoActualizado.paciente.notifWhatsapp,
+      notifEmail: pac.notifEmail,
+      notifWhatsapp: pac.notifWhatsapp,
     });
     await sendNotification(pacChannels, {
       event: 'TURNO_REPROGRAMADO',
       title: 'Turno reprogramado',
-      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue reprogramado.`,
-      userEmail: turnoActualizado.paciente.email,
-      userPhone: turnoActualizado.paciente.telefono ?? undefined,
+      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue reprogramado para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      userEmail: pac.email,
+      userPhone: pac.telefono ?? undefined,
       meta: {
         turnoId: turnoActualizado.id,
         fechaHora: turnoActualizado.fechaHora.toISOString(),
@@ -486,6 +492,47 @@ router.post('/:id/reprogramar', authMiddleware('PACIENTE'), asyncHandler(async (
         lugarAtencion: turnoActualizado.profesional.lugarAtencion ?? undefined,
         linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
       },
+    });
+    if (pac.usuario?.id) {
+      await createNotification({
+        usuarioId: pac.usuario.id,
+        tipo: 'TURNO_REPROGRAMADO',
+        titulo: 'Turno reprogramado',
+        cuerpo: `${who} reprogramó tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+        link: '/dashboard/paciente',
+      });
+    }
+  }
+
+  // Si lo reprogramó el paciente, notificar también al profesional
+  if (isPacienteOwner) {
+    const profUsuario = await prisma.usuario.findUnique({ where: { id: turnoActualizado.profesional.usuarioId } });
+    const profChannels = resolveChannels({
+      notifEmail: turnoActualizado.profesional.notifEmail,
+      notifWhatsapp: turnoActualizado.profesional.notifWhatsapp,
+    });
+    const pacNombre = turnoActualizado.paciente
+      ? `${turnoActualizado.paciente.nombre} ${turnoActualizado.paciente.apellido}`
+      : 'El paciente';
+    await sendNotification(profChannels, {
+      event: 'TURNO_REPROGRAMADO',
+      title: 'Turno reprogramado por el paciente',
+      message: `${pacNombre} reprogramó su turno para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      userEmail: profUsuario?.email,
+      userPhone: turnoActualizado.profesional.telefono || undefined,
+      meta: {
+        turnoId: turnoActualizado.id,
+        fechaHora: turnoActualizado.fechaHora.toISOString(),
+        paciente: pacNombre,
+        modalidad: turnoActualizado.modalidad,
+      },
+    });
+    await createNotification({
+      usuarioId: turnoActualizado.profesional.usuarioId,
+      tipo: 'TURNO_REPROGRAMADO',
+      titulo: 'Turno reprogramado',
+      cuerpo: `${pacNombre} reprogramó su turno para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      link: '/dashboard',
     });
   }
 
