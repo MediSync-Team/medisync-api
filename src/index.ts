@@ -18,6 +18,7 @@ import { pacientesRouter } from './routes/pacientes.routes';
 import { notificationsRouter } from './routes/notifications.routes';
 import { listaEsperaRouter } from './routes/lista-espera.routes';
 import { resenasRouter } from './routes/resenas.routes';
+import { bloqueosRouter } from './routes/bloqueos.routes';
 import { adminRouter } from './routes/admin.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
@@ -87,6 +88,7 @@ app.use('/api/pacientes', pacientesRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/lista-espera', listaEsperaRouter);
 app.use('/api/resenas', resenasRouter);
+app.use('/api/bloqueos', bloqueosRouter);
 app.use('/api/admin', adminRouter);
 
 app.use(errorHandler);

@@ -302,42 +302,62 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   const fechaDate = new Date(year, month - 1, day);
   const diaSemana = fechaDate.getDay();
 
-  const disponibilidad = await prisma.disponibilidad.findMany({
-    where: { profesionalId: req.params.id, diaSemana, activo: true },
-  });
+  const [disponibilidad, turnosOcupados, bloqueos] = await Promise.all([
+    prisma.disponibilidad.findMany({
+      where: { profesionalId: req.params.id, diaSemana, activo: true },
+    }),
+    prisma.turno.findMany({
+      where: {
+        profesionalId: req.params.id,
+        fechaHora: { gte: new Date(year, month - 1, day, 0, 0, 0, 0), lte: new Date(year, month - 1, day, 23, 59, 59, 999) },
+        estado: { notIn: ['CANCELADO'] },
+      },
+    }),
+    prisma.bloqueoDisponibilidad.findMany({
+      where: {
+        profesionalId: req.params.id,
+        fechaInicio: { lte: fechaDate },
+        fechaFin: { gte: fechaDate },
+      },
+    }),
+  ]);
 
-  const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-
-  const turnosOcupados = await prisma.turno.findMany({
-    where: {
-      profesionalId: req.params.id,
-      fechaHora: { gte: startOfDay, lte: endOfDay },
-      estado: { notIn: ['CANCELADO'] },
-    },
-  });
+  // Check for full-day bloqueo
+  const bloqueoDiaTodo = bloqueos.some(b => !b.horaInicio && !b.horaFin);
 
   const slotsMap = new Map<string, boolean>();
 
-  disponibilidad.forEach((disp) => {
-    if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
+  if (!bloqueoDiaTodo) {
+    disponibilidad.forEach((disp) => {
+      if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
 
-    let [h, m] = disp.horaInicio.split(':').map(Number);
-    const [hf, mf] = disp.horaFin.split(':').map(Number);
+      let [h, m] = disp.horaInicio.split(':').map(Number);
+      const [hf, mf] = disp.horaFin.split(':').map(Number);
 
-    while (h < hf || (h === hf && m < mf)) {
-      const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
+      while (h < hf || (h === hf && m < mf)) {
+        const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
+        const slotMinutes = h * 60 + m;
 
-      const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
-      if (!slotsMap.has(horaStr)) {
-        slotsMap.set(horaStr, !ocupado);
+        const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
+
+        // Check if slot falls within a partial bloqueo
+        const bloqueado = bloqueos.some(b => {
+          if (!b.horaInicio || !b.horaFin) return false;
+          const [bi, bmi] = b.horaInicio.split(':').map(Number);
+          const [bf, bmf] = b.horaFin.split(':').map(Number);
+          return slotMinutes >= bi * 60 + bmi && slotMinutes < bf * 60 + bmf;
+        });
+
+        if (!slotsMap.has(horaStr)) {
+          slotsMap.set(horaStr, !ocupado && !bloqueado);
+        }
+
+        m += 30;
+        if (m >= 60) { h++; m -= 60; }
       }
-
-      m += 30;
-      if (m >= 60) { h++; m -= 60; }
-    }
-  });
+    });
+  }
 
   const slots = Array.from(slotsMap.entries()).map(([hora, disponible]) => ({ hora, disponible }));
 

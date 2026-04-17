@@ -125,6 +125,7 @@ model Profesional {
   turnos           Turno[]
   listaEspera      ListaEspera[]
   resenas          Resena[]
+  bloqueos         BloqueoDisponibilidad[]
 
   @@map("profesional")
 }
@@ -304,6 +305,22 @@ model ListaEspera {
   @@index([pacienteId, estado])
   @@unique([profesionalId, pacienteId, fecha, modalidad, estado])
   @@map("lista_espera")
+}
+
+model BloqueoDisponibilidad {
+  id            String    @id @default(uuid())
+  profesionalId String    @map("profesional_id")
+  fechaInicio   DateTime  @db.Date @map("fecha_inicio")
+  fechaFin      DateTime  @db.Date @map("fecha_fin")
+  horaInicio    String?   @map("hora_inicio")
+  horaFin       String?   @map("hora_fin")
+  motivo        String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+
+  @@index([profesionalId, fechaInicio, fechaFin])
+  @@map("bloqueo_disponibilidad")
 }
 
 model Resena {

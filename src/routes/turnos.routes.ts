@@ -229,6 +229,26 @@ router.post(
       throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
     }
 
+    // Check for bloqueo on this date/time
+    const slotDate = new Date(fechaHoraDate.getFullYear(), fechaHoraDate.getMonth(), fechaHoraDate.getDate());
+    const bloqueos = await prisma.bloqueoDisponibilidad.findMany({
+      where: {
+        profesionalId,
+        fechaInicio: { lte: slotDate },
+        fechaFin: { gte: slotDate },
+      },
+    });
+    if (bloqueos.length > 0) {
+      const slotMinutes = fechaHoraDate.getHours() * 60 + fechaHoraDate.getMinutes();
+      const bloqueado = bloqueos.some(b => {
+        if (!b.horaInicio || !b.horaFin) return true; // full-day block
+        const [bh, bm] = b.horaInicio.split(':').map(Number);
+        const [eh, em] = b.horaFin.split(':').map(Number);
+        return slotMinutes >= bh * 60 + bm && slotMinutes < eh * 60 + em;
+      });
+      if (bloqueado) throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
+    }
+
     let pacienteId: string | null = null;
 
     if (req.user?.rol === 'PACIENTE') {
