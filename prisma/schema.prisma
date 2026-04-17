@@ -137,6 +137,7 @@ model Disponibilidad {
   horaInicio      String    @map("hora_inicio")
   horaFin         String    @map("hora_fin")
   modalidad       Modalidad @default(PRESENCIAL)
+  lugarAtencion   String?   @map("lugar_atencion")
   activo          Boolean   @default(true)
   createdAt       DateTime  @default(now()) @map("created_at")
 

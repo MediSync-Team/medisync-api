@@ -241,7 +241,7 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
 }));
 
 router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const { diaSemana, horaInicio, horaFin, modalidad } = req.body;
+  const { diaSemana, horaInicio, horaFin, modalidad, lugarAtencion } = req.body;
 
   const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
   if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
@@ -263,6 +263,7 @@ router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(a
       horaInicio,
       horaFin,
       modalidad: modalidad || 'PRESENCIAL',
+      lugarAtencion: lugarAtencion?.trim() || null,
     },
   });
 
@@ -325,7 +326,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   // Check for full-day bloqueo
   const bloqueoDiaTodo = bloqueos.some(b => !b.horaInicio && !b.horaFin);
 
-  const slotsMap = new Map<string, boolean>();
+  const slotsMap = new Map<string, { disponible: boolean; lugarAtencion: string | null }>();
 
   if (!bloqueoDiaTodo) {
     disponibilidad.forEach((disp) => {
@@ -350,7 +351,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
         });
 
         if (!slotsMap.has(horaStr)) {
-          slotsMap.set(horaStr, !ocupado && !bloqueado);
+          slotsMap.set(horaStr, { disponible: !ocupado && !bloqueado, lugarAtencion: disp.lugarAtencion ?? null });
         }
 
         m += 30;
@@ -359,7 +360,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
     });
   }
 
-  const slots = Array.from(slotsMap.entries()).map(([hora, disponible]) => ({ hora, disponible }));
+  const slots = Array.from(slotsMap.entries()).map(([hora, { disponible, lugarAtencion }]) => ({ hora, disponible, lugarAtencion }));
 
   res.json(success(slots));
 }));
