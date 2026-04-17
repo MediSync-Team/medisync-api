@@ -137,4 +137,97 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   }));
 }));
 
+// ── GET /profesional/pagos ───────────────────────────────────────────────────
+// Lista de pagos recibidos por el profesional autenticado con filtros y resumen.
+router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesional = await prisma.profesional.findUnique({
+    where: { usuarioId: req.user!.userId },
+  });
+  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+
+  const { desde, hasta, estado, page = '1', limit = '20' } = req.query as Record<string, string>;
+
+  const pageNum  = Math.max(1, parseInt(page));
+  const pageSize = Math.min(100, Math.max(1, parseInt(limit)));
+  const skip     = (pageNum - 1) * pageSize;
+
+  // Build date range — default: last 12 months
+  const now = new Date();
+  const defaultDesde = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const fechaDesde = desde ? new Date(desde) : defaultDesde;
+  const fechaHasta = hasta ? new Date(hasta + 'T23:59:59') : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+  const whereBase = {
+    turno: {
+      profesionalId: profesional.id,
+      fechaHora: { gte: fechaDesde, lte: fechaHasta },
+    },
+    ...(estado && estado !== 'TODOS' ? { estado: estado as any } : {}),
+  };
+
+  const [pagos, total] = await Promise.all([
+    prisma.pago.findMany({
+      where: whereBase,
+      include: {
+        turno: {
+          select: {
+            id: true,
+            fechaHora: true,
+            modalidad: true,
+            estado: true,
+            paciente: { select: { nombre: true, apellido: true, email: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: pageSize,
+    }),
+    prisma.pago.count({ where: whereBase }),
+  ]);
+
+  // Monthly summary — always last 12 months regardless of filter
+  const mesesResumen: { mes: string; bruto: number; neto: number; cantidad: number }[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const end   = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
+    const pagosDelMes = await prisma.pago.findMany({
+      where: {
+        turno: { profesionalId: profesional.id, fechaHora: { gte: start, lte: end } },
+        estado: 'APROBADO',
+      },
+      select: { monto: true, montoNeto: true },
+    });
+    mesesResumen.push({
+      mes: start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' }),
+      bruto:    pagosDelMes.reduce((s, p) => s + Number(p.monto), 0),
+      neto:     pagosDelMes.reduce((s, p) => s + Number(p.montoNeto), 0),
+      cantidad: pagosDelMes.length,
+    });
+  }
+
+  // Totals for the filtered period
+  const todosEnRango = await prisma.pago.findMany({
+    where: {
+      turno: { profesionalId: profesional.id, fechaHora: { gte: fechaDesde, lte: fechaHasta } },
+    },
+    select: { monto: true, montoNeto: true, estado: true },
+  });
+
+  const totales = {
+    bruto:     todosEnRango.filter(p => p.estado === 'APROBADO').reduce((s, p) => s + Number(p.monto), 0),
+    neto:      todosEnRango.filter(p => p.estado === 'APROBADO').reduce((s, p) => s + Number(p.montoNeto), 0),
+    pendiente: todosEnRango.filter(p => p.estado === 'PENDIENTE').reduce((s, p) => s + Number(p.monto), 0),
+    aprobados: todosEnRango.filter(p => p.estado === 'APROBADO').length,
+    pendientes: todosEnRango.filter(p => p.estado === 'PENDIENTE').length,
+  };
+
+  res.json(success({
+    pagos,
+    pagination: { total, page: pageNum, limit: pageSize, pages: Math.ceil(total / pageSize) },
+    totales,
+    mesesResumen,
+  }));
+}));
+
 export { router as dashboardRouter };
