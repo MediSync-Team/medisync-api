@@ -87,4 +87,99 @@ router.get('/mi-resena/:turnoId', authMiddleware('PACIENTE'), asyncHandler(async
   res.json(success(resena || null));
 }));
 
+// GET /api/resenas/mis-resenas — profesional ve todas sus reseñas
+router.get('/mis-resenas', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+
+  const { page = '1', limit = '20', rating } = req.query;
+  const p = Math.max(1, Number(page));
+  const l = Math.min(50, Number(limit));
+  const skip = (p - 1) * l;
+
+  const where: any = { profesionalId: profesional.id };
+  if (rating && Number(rating) >= 1 && Number(rating) <= 5) {
+    where.rating = Number(rating);
+  }
+
+  const [resenas, total, aggregate, distribucion] = await Promise.all([
+    prisma.resena.findMany({
+      where,
+      include: {
+        paciente: { select: { nombre: true, apellido: true, fotoUrl: true } },
+        turno: { select: { fechaHora: true, modalidad: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: l,
+    }),
+    prisma.resena.count({ where }),
+    prisma.resena.aggregate({
+      where: { profesionalId: profesional.id },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+    // Distribución por estrellas (1-5) — siempre sin filtro de rating
+    prisma.resena.groupBy({
+      by: ['rating'],
+      where: { profesionalId: profesional.id },
+      _count: { rating: true },
+    }),
+  ]);
+
+  const distMap: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (const d of distribucion) { distMap[d.rating] = d._count.rating; }
+
+  res.json(success({
+    resenas,
+    pagination: { page: p, limit: l, total, totalPages: Math.ceil(total / l) },
+    stats: {
+      promedio: aggregate._avg.rating ? Number(aggregate._avg.rating.toFixed(1)) : null,
+      total: aggregate._count.rating,
+      distribucion: distMap,
+    },
+  }));
+}));
+
+// PATCH /api/resenas/:id/respuesta — profesional responde una reseña
+router.patch('/:id/respuesta', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const { respuesta } = req.body;
+
+  if (typeof respuesta !== 'string' || respuesta.trim().length < 5 || respuesta.trim().length > 2000) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'La respuesta debe tener entre 5 y 2000 caracteres');
+  }
+
+  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+
+  const resena = await prisma.resena.findUnique({ where: { id: req.params.id } });
+  if (!resena) throw new AppError(404, 'NOT_FOUND', 'Reseña no encontrada');
+  if (resena.profesionalId !== profesional.id) throw new AppError(403, 'FORBIDDEN', 'Sin permisos para responder esta reseña');
+
+  const updated = await prisma.resena.update({
+    where: { id: req.params.id },
+    data: { respuesta: respuesta.trim(), respondidaAt: new Date() },
+    include: { paciente: { select: { nombre: true, apellido: true, fotoUrl: true } } },
+  });
+
+  res.json(success(updated));
+}));
+
+// DELETE /api/resenas/:id/respuesta — profesional borra su respuesta
+router.delete('/:id/respuesta', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+
+  const resena = await prisma.resena.findUnique({ where: { id: req.params.id } });
+  if (!resena) throw new AppError(404, 'NOT_FOUND', 'Reseña no encontrada');
+  if (resena.profesionalId !== profesional.id) throw new AppError(403, 'FORBIDDEN', 'Sin permisos');
+
+  const updated = await prisma.resena.update({
+    where: { id: req.params.id },
+    data: { respuesta: null, respondidaAt: null },
+  });
+
+  res.json(success(updated));
+}));
+
 export { router as resenasRouter };

@@ -307,14 +307,16 @@ model ListaEspera {
 }
 
 model Resena {
-  id            String   @id @default(uuid())
-  turnoId       String   @unique @map("turno_id")
-  profesionalId String   @map("profesional_id")
-  pacienteId    String   @map("paciente_id")
+  id            String    @id @default(uuid())
+  turnoId       String    @unique @map("turno_id")
+  profesionalId String    @map("profesional_id")
+  pacienteId    String    @map("paciente_id")
   rating        Int
   comentario    String?
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  respuesta     String?
+  respondidaAt  DateTime? @map("respondida_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   turno       Turno       @relation(fields: [turnoId], references: [id], onDelete: Cascade)
   profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
