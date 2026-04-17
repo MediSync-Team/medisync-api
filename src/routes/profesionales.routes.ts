@@ -13,10 +13,15 @@ router.get('/', asyncHandler(async (req, res) => {
     precioMax,
     modalidad,
     fecha,
+    disponibleEstaSemana,
     orderBy: orderByParam,
     page = 1,
     limit = 10,
   } = req.query;
+
+  const filterDisponible = disponibleEstaSemana === 'true';
+  const pageNum  = Number(page);
+  const limitNum = Number(limit);
 
   const where: any = { activo: true };
 
@@ -45,11 +50,27 @@ router.get('/', asyncHandler(async (req, res) => {
     const [year, month, day] = String(fecha).split('-').map(Number);
     const diaSemana = new Date(year, month - 1, day).getDay();
     const dispFilter = { some: { activo: true, diaSemana } };
-    // Merge with existing disponibilidades filter if present
     if (where.disponibilidades) {
       where.disponibilidades = { some: { activo: true, diaSemana, modalidad: where.disponibilidades.some.modalidad } };
     } else {
       where.disponibilidades = dispFilter;
+    }
+  }
+
+  // When filtering by real-time availability we pre-require availability for at least one day this week
+  if (filterDisponible && !fecha) {
+    const hoy = new Date();
+    const diasSemana = Array.from({ length: 7 }, (_, i) => new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i).getDay());
+    const uniqueDias = [...new Set(diasSemana)];
+    if (where.disponibilidades) {
+      // merge: keep other conditions but also require a diaSemana match
+      where.AND = [
+        { disponibilidades: where.disponibilidades },
+        { disponibilidades: { some: { activo: true, diaSemana: { in: uniqueDias } } } },
+      ];
+      delete where.disponibilidades;
+    } else {
+      where.disponibilidades = { some: { activo: true, diaSemana: { in: uniqueDias } } };
     }
   }
 
@@ -59,9 +80,13 @@ router.get('/', asyncHandler(async (req, res) => {
   if (orderByParam === 'precio_desc') orderBy = { precioConsulta: 'desc' };
   if (orderByParam === 'nombre_asc')  orderBy = [{ apellido: 'asc' }, { nombre: 'asc' }];
 
-  const skip = (Number(page) - 1) * Number(limit);
+  // When real-time availability filter is on, we fetch all matches and post-filter.
+  // Otherwise use normal DB-level pagination.
+  const fetchAll = filterDisponible;
+  const skip = fetchAll ? 0 : (pageNum - 1) * limitNum;
+  const take = fetchAll ? 500 : limitNum;
 
-  const [profesionales, total] = await Promise.all([
+  const [profesionales, dbTotal] = await Promise.all([
     prisma.profesional.findMany({
       where,
       include: {
@@ -70,23 +95,23 @@ router.get('/', asyncHandler(async (req, res) => {
         _count: { select: { resenas: true } },
       },
       skip,
-      take: Number(limit),
+      take,
       orderBy,
     }),
-    prisma.profesional.count({ where }),
+    fetchAll ? Promise.resolve(0) : prisma.profesional.count({ where }),
   ]);
 
-  // Attach average rating per profesional
+  // Attach average rating
   const ids = profesionales.map((p) => p.id);
-  const ratings = await prisma.resena.groupBy({
+  const ratings = ids.length ? await prisma.resena.groupBy({
     by: ['profesionalId'],
     where: { profesionalId: { in: ids } },
     _avg: { rating: true },
     _count: { rating: true },
-  });
+  }) : [];
   const ratingMap = new Map(ratings.map((r) => [r.profesionalId, r]));
 
-  const profesionalesConRating = profesionales.map((p) => {
+  let profesionalesConRating = profesionales.map((p) => {
     const r = ratingMap.get(p.id);
     return {
       ...p,
@@ -95,9 +120,62 @@ router.get('/', asyncHandler(async (req, res) => {
     };
   });
 
+  // ── Real-time slot availability filter ─────────────────────────────────────
+  if (filterDisponible) {
+    const hoy = new Date();
+    // Next 7 calendar days (today inclusive), each with its exact date and diaSemana
+    const semana = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i);
+      return { fecha: d, diaSemana: d.getDay() };
+    });
+
+    const inicioSemana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0, 0);
+    const finSemana    = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 6, 23, 59, 59, 999);
+
+    // Calculate weekly slot capacity per profesional from disponibilidades
+    const capacidadPorProf = new Map<string, number>();
+    for (const prof of profesionalesConRating) {
+      let capacidad = 0;
+      for (const disp of prof.disponibilidades) {
+        const diasCoincidentes = semana.filter((s) => s.diaSemana === disp.diaSemana).length;
+        if (diasCoincidentes === 0) continue;
+        const [hi, mi] = disp.horaInicio.split(':').map(Number);
+        const [hf, mf] = disp.horaFin.split(':').map(Number);
+        const slotsPerDay = ((hf * 60 + mf) - (hi * 60 + mi)) / 30;
+        capacidad += slotsPerDay * diasCoincidentes;
+      }
+      capacidadPorProf.set(prof.id, capacidad);
+    }
+
+    // Batch-fetch booked turno counts for the week (one query)
+    const turnosCounts = ids.length ? await prisma.turno.groupBy({
+      by: ['profesionalId'],
+      where: {
+        profesionalId: { in: ids },
+        fechaHora: { gte: inicioSemana, lte: finSemana },
+        estado: { notIn: ['CANCELADO'] },
+      },
+      _count: { id: true },
+    }) : [];
+    const bookedMap = new Map(turnosCounts.map((t) => [t.profesionalId, t._count.id]));
+
+    // Keep only profesionales with at least one free slot this week
+    profesionalesConRating = profesionalesConRating.filter((prof) => {
+      const capacidad = capacidadPorProf.get(prof.id) ?? 0;
+      const booked    = bookedMap.get(prof.id) ?? 0;
+      return capacidad > booked;
+    });
+  }
+
+  // Paginate post-filtered results when fetchAll was used
+  const total = fetchAll ? profesionalesConRating.length : dbTotal;
+  const paginated = fetchAll
+    ? profesionalesConRating.slice((pageNum - 1) * limitNum, pageNum * limitNum)
+    : profesionalesConRating;
+
   res.json(success({
-    profesionales: profesionalesConRating,
-    pagination: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+    profesionales: paginated,
+    pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
   }));
 }));
 
