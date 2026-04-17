@@ -321,8 +321,18 @@ router.post(
         : null;
 
       const result = await prisma.$transaction(async (tx) => {
+      const existingStart = fechaHoraDate.getTime();
+      const existingEnd = existingStart + 30 * 60 * 1000; // 30 min slots
+
       const existente = await tx.turno.findFirst({
-        where: { profesionalId, fechaHora: fechaHoraDate, estado: { notIn: ['CANCELADO'] } },
+        where: {
+          profesionalId,
+          fechaHora: {
+            gte: new Date(existingStart - 30 * 60 * 1000),
+            lte: new Date(existingEnd + 30 * 60 * 1000),
+          },
+          estado: { notIn: ['CANCELADO'] },
+        },
       });
 
       if (existente) {
