@@ -360,7 +360,9 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
     });
   }
 
-  const slots = Array.from(slotsMap.entries()).map(([hora, { disponible, lugarAtencion }]) => ({ hora, disponible, lugarAtencion }));
+  const slots = Array.from(slotsMap.entries())
+    .map(([hora, { disponible, lugarAtencion }]) => ({ hora, disponible, lugarAtencion }))
+    .sort((a, b) => a.hora.localeCompare(b.hora));
 
   res.json(success(slots));
 }));

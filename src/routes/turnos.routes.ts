@@ -202,7 +202,9 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
     }
   });
 
-  const slots = Array.from(slotsMap.entries()).map(([hora, disponible]) => ({ hora, disponible }));
+  const slots = Array.from(slotsMap.entries())
+    .map(([hora, disponible]) => ({ hora, disponible }))
+    .sort((a, b) => a.hora.localeCompare(b.hora));
 
   res.json(success(slots));
 }));
