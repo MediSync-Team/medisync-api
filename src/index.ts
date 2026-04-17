@@ -96,7 +96,7 @@ app.listen(PORT, () => {
   console.log(`📚 API: http://localhost:${PORT}/api`);
 });
 
-cron.schedule('0 * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   try {
     await sendUpcomingAppointmentsReminders();
   } catch (err) {

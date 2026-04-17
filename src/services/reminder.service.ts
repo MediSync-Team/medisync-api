@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma';
 import { sendNotification, resolveChannels } from '../utils/notifications';
+import { createNotification } from './notification.service';
 
 async function sendReminders(windowLabel: '24h' | '2h') {
   const now = new Date();
@@ -8,9 +9,9 @@ async function sendReminders(windowLabel: '24h' | '2h') {
     ? 24 * 60 * 60 * 1000
     : 2 * 60 * 60 * 1000;
 
-  // Tolerancia de ±5 min para evitar duplicados entre ejecuciones del cron
-  const windowStart = new Date(now.getTime() + windowMs - 5 * 60 * 1000);
-  const windowEnd   = new Date(now.getTime() + windowMs + 5 * 60 * 1000);
+  // ±35 min window so every 30-min cron run covers all turnos without gaps
+  const windowStart = new Date(now.getTime() + windowMs - 35 * 60 * 1000);
+  const windowEnd   = new Date(now.getTime() + windowMs + 35 * 60 * 1000);
 
   const preferenceField = windowLabel === '24h'
     ? 'notifRecordatorio24h'
@@ -20,52 +21,146 @@ async function sendReminders(windowLabel: '24h' | '2h') {
     where: {
       fechaHora: { gte: windowStart, lte: windowEnd },
       estado: { in: ['RESERVADO', 'CONFIRMADO'] },
-      paciente: {
-        aceptaRecordatorios: true,
-        [preferenceField]: true,
-      },
     },
     include: {
-      paciente: true,
-      profesional: { include: { especialidad: true } },
+      paciente: { include: { usuario: { select: { id: true } } } },
+      profesional: {
+        include: {
+          especialidad: true,
+          usuario: { select: { id: true } },
+        },
+      },
     },
-    take: 200,
+    take: 500,
   });
 
   const label = windowLabel === '24h' ? '24 horas' : '2 horas';
+  const eventKey = windowLabel === '24h' ? 'RECORDATORIO_24H' : 'RECORDATORIO_2H';
 
   await Promise.allSettled(
-    turnos.map(async (turno) => {
-      if (!turno.paciente) return;
+    turnos.flatMap((turno) => {
+      const tasks: Promise<unknown>[] = [];
 
-      const channels = resolveChannels({
-        notifEmail: turno.paciente.notifEmail,
-        notifWhatsapp: turno.paciente.notifWhatsapp,
-      });
+      // ── Paciente ─────────────────────────────────────────────────────────
+      if (
+        turno.paciente?.aceptaRecordatorios &&
+        (turno.paciente as Record<string, unknown>)[preferenceField]
+      ) {
+        const tipoKey = `${windowLabel}_paciente` as const;
 
-      await sendNotification(channels, {
-        event: windowLabel === '24h' ? 'RECORDATORIO_24H' : 'RECORDATORIO_2H',
-        title: `Recordatorio: turno en ${label}`,
-        message: `Tenés un turno en ${label} con ${turno.profesional.nombre} ${turno.profesional.apellido}.`,
-        userEmail: turno.paciente.email,
-        userPhone: turno.paciente.telefono ?? undefined,
-        meta: {
-          turnoId: turno.id,
-          fechaHora: turno.fechaHora.toISOString(),
-          profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
-          especialidad: turno.profesional.especialidad.nombre,
-          modalidad: turno.modalidad,
-          lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
-          linkVideollamada: turno.linkVideollamada ?? undefined,
-        },
-      });
+        tasks.push(
+          prisma.recordatorioEnviado
+            .create({ data: { turnoId: turno.id, tipo: tipoKey } })
+            .then(async () => {
+              const paciente = turno.paciente!;
+              const channels = resolveChannels({
+                notifEmail: paciente.notifEmail,
+                notifWhatsapp: paciente.notifWhatsapp,
+              });
+
+              await sendNotification(channels, {
+                event: eventKey,
+                title: `Recordatorio: turno en ${label}`,
+                message: `Tenés un turno en ${label} con ${turno.profesional.nombre} ${turno.profesional.apellido}.`,
+                userEmail: paciente.email,
+                userPhone: paciente.telefono ?? undefined,
+                meta: {
+                  turnoId: turno.id,
+                  fechaHora: turno.fechaHora.toISOString(),
+                  profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+                  especialidad: turno.profesional.especialidad.nombre,
+                  modalidad: turno.modalidad,
+                  lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
+                  linkVideollamada: turno.linkVideollamada ?? undefined,
+                },
+              });
+
+              // In-app notification
+              if (paciente.usuario?.id) {
+                await createNotification({
+                  usuarioId: paciente.usuario.id,
+                  tipo: eventKey,
+                  titulo: `Turno en ${label}`,
+                  cuerpo: `Tu turno con ${turno.profesional.nombre} ${turno.profesional.apellido} es en ${label}.`,
+                  link: '/dashboard/paciente',
+                });
+              }
+            })
+            .catch((err: { code?: string }) => {
+              // P2002 = unique constraint violation → already sent
+              if (err?.code !== 'P2002') {
+                console.error(`[reminders] paciente ${tipoKey} turno ${turno.id}:`, err);
+              }
+            }),
+        );
+      }
+
+      // ── Profesional ───────────────────────────────────────────────────────
+      if (turno.profesional.notifEmail || turno.profesional.notifWhatsapp) {
+        const tipoKey = `${windowLabel}_profesional` as const;
+
+        tasks.push(
+          prisma.recordatorioEnviado
+            .create({ data: { turnoId: turno.id, tipo: tipoKey } })
+            .then(async () => {
+              const prof = turno.profesional;
+              const profUsuario = await prisma.usuario.findUnique({
+                where: { id: prof.usuarioId },
+                select: { email: true },
+              });
+
+              const channels = resolveChannels({
+                notifEmail: prof.notifEmail,
+                notifWhatsapp: prof.notifWhatsapp,
+              });
+
+              const pacienteNombre = turno.paciente
+                ? `${turno.paciente.nombre} ${turno.paciente.apellido}`
+                : 'un paciente';
+
+              await sendNotification(channels, {
+                event: eventKey,
+                title: `Recordatorio: turno en ${label}`,
+                message: `Tenés un turno con ${pacienteNombre} en ${label}.`,
+                userEmail: profUsuario?.email ?? '',
+                userPhone: prof.telefono ?? undefined,
+                meta: {
+                  turnoId: turno.id,
+                  fechaHora: turno.fechaHora.toISOString(),
+                  paciente: pacienteNombre,
+                  modalidad: turno.modalidad,
+                  lugarAtencion: prof.lugarAtencion ?? undefined,
+                  linkVideollamada: turno.linkVideollamada ?? undefined,
+                },
+              });
+
+              // In-app notification
+              if (prof.usuario?.id) {
+                await createNotification({
+                  usuarioId: prof.usuario.id,
+                  tipo: eventKey,
+                  titulo: `Turno en ${label}`,
+                  cuerpo: `Tu turno con ${pacienteNombre} es en ${label}.`,
+                  link: '/dashboard',
+                });
+              }
+            })
+            .catch((err: { code?: string }) => {
+              if (err?.code !== 'P2002') {
+                console.error(`[reminders] profesional ${tipoKey} turno ${turno.id}:`, err);
+              }
+            }),
+        );
+      }
+
+      return tasks;
     }),
   );
 
   console.log(`[reminders:${windowLabel}] processed ${turnos.length} appointment(s)`);
 }
 
-/** Corre cada hora — envía recordatorios de 24 h y 2 h */
+/** Runs every 30 min — sends 24h and 2h reminders */
 export async function sendUpcomingAppointmentsReminders() {
   await Promise.allSettled([
     sendReminders('24h'),

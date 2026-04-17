@@ -339,3 +339,14 @@ model Notificacion {
   @@index([usuarioId, createdAt])
   @@map("notificacion")
 }
+
+model RecordatorioEnviado {
+  id        String   @id @default(uuid())
+  turnoId   String   @map("turno_id")
+  tipo      String   // "24h_paciente" | "2h_paciente" | "24h_profesional" | "2h_profesional"
+  enviadoAt DateTime @default(now()) @map("enviado_at")
+
+  @@unique([turnoId, tipo])
+  @@index([enviadoAt])
+  @@map("recordatorio_enviado")
+}
