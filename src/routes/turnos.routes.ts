@@ -58,6 +58,34 @@ function assertPreconsultaEditable(turno: { fechaHora: Date; estado: string }) {
   }
 }
 
+router.get('/mi-historial', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+
+  const page  = Math.max(1, Number(req.query.page)  || 1);
+  const limit = Math.min(50, Number(req.query.limit) || 10);
+  const skip  = (page - 1) * limit;
+
+  const where = { pacienteId: paciente.id, estado: 'COMPLETADO' as const };
+  const [turnos, total] = await Promise.all([
+    prisma.turno.findMany({
+      where,
+      include: {
+        profesional: { include: { especialidad: true } },
+        evolucion: true,
+        recetaIndicacion: true,
+        archivos: true,
+      },
+      orderBy: { fechaHora: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.turno.count({ where }),
+  ]);
+
+  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+}));
+
 router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
   const authReq = req as AuthRequest;
   const { tipo } = req.query;
