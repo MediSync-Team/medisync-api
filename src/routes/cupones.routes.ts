@@ -1,10 +1,15 @@
 import { Router } from 'express';
 import { AuthRequest, authMiddleware } from '../middleware/auth.middleware';
-import { asyncHandler } from '../middleware/async-handler';
-import { AppError } from '../utils/errors';
-import { prisma } from '../db';
+import { asyncHandler } from '../utils/response';
+import { AppError, success } from '../utils/response';
+import prisma from '../lib/prisma';
 
 export const cuponesRouter = Router();
+
+async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
+  const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
+  return profesional?.id || null;
+}
 
 // POST /cupones — create coupon (PROFESIONAL)
 cuponesRouter.post(
@@ -12,7 +17,10 @@ cuponesRouter.post(
   authMiddleware('PROFESIONAL'),
   asyncHandler(async (req: AuthRequest, res) => {
     const { codigo, tipo, valor, descripcion, maxUsos, expiresAt } = req.body;
-    const profesionalId = req.user!.profesional!.id;
+    const profesionalId = await getProfesionalIdByUsuario(req.user!.userId);
+    if (!profesionalId) {
+      throw new AppError(403, 'FORBIDDEN', 'Usuario no es profesional');
+    }
 
     if (!codigo || !tipo || valor === undefined || valor === null) {
       throw new AppError(400, 'VALIDATION_ERROR', 'codigo, tipo y valor son obligatorios');
@@ -36,7 +44,7 @@ cuponesRouter.post(
       },
     });
 
-    res.json({ success: true, data: cupon });
+    res.json(success(cupon));
   })
 );
 
@@ -45,14 +53,17 @@ cuponesRouter.get(
   '/',
   authMiddleware('PROFESIONAL'),
   asyncHandler(async (req: AuthRequest, res) => {
-    const profesionalId = req.user!.profesional!.id;
+    const profesionalId = await getProfesionalIdByUsuario(req.user!.userId);
+    if (!profesionalId) {
+      throw new AppError(403, 'FORBIDDEN', 'Usuario no es profesional');
+    }
 
     const cupones = await prisma.cupon.findMany({
       where: { profesionalId },
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json({ success: true, data: cupones });
+    res.json(success(cupones));
   })
 );
 
@@ -63,7 +74,10 @@ cuponesRouter.patch(
   asyncHandler(async (req: AuthRequest, res) => {
     const { id } = req.params;
     const { activo, descripcion, maxUsos, expiresAt } = req.body;
-    const profesionalId = req.user!.profesional!.id;
+    const profesionalId = await getProfesionalIdByUsuario(req.user!.userId);
+    if (!profesionalId) {
+      throw new AppError(403, 'FORBIDDEN', 'Usuario no es profesional');
+    }
 
     const cupon = await prisma.cupon.findUnique({ where: { id } });
     if (!cupon) {
@@ -83,7 +97,7 @@ cuponesRouter.patch(
       },
     });
 
-    res.json({ success: true, data: updated });
+    res.json(success(updated));
   })
 );
 
@@ -93,7 +107,10 @@ cuponesRouter.delete(
   authMiddleware('PROFESIONAL'),
   asyncHandler(async (req: AuthRequest, res) => {
     const { id } = req.params;
-    const profesionalId = req.user!.profesional!.id;
+    const profesionalId = await getProfesionalIdByUsuario(req.user!.userId);
+    if (!profesionalId) {
+      throw new AppError(403, 'FORBIDDEN', 'Usuario no es profesional');
+    }
 
     const cupon = await prisma.cupon.findUnique({ where: { id } });
     if (!cupon) {
@@ -109,12 +126,12 @@ cuponesRouter.delete(
         where: { id },
         data: { activo: false },
       });
+      res.json(success({ eliminado: false, motivo: 'Cupón con usos — archivado' }));
     } else {
       // Hard delete
       await prisma.cupon.delete({ where: { id } });
+      res.json(success({ eliminado: true }));
     }
-
-    res.json({ success: true, data: null });
   })
 );
 
@@ -167,17 +184,14 @@ cuponesRouter.post(
     }
     const montoFinal = Math.max(0, montoOriginal - montoDescuento);
 
-    res.json({
-      success: true,
-      data: {
-        cuponId: cupon.id,
-        descripcion: cupon.descripcion,
-        tipo: cupon.tipo,
-        valor: cupon.valor,
-        montoOriginal,
-        montoDescuento,
-        montoFinal,
-      },
-    });
+    res.json(success({
+      cuponId: cupon.id,
+      descripcion: cupon.descripcion,
+      tipo: cupon.tipo,
+      valor: cupon.valor,
+      montoOriginal,
+      montoDescuento,
+      montoFinal,
+    }));
   })
 );
