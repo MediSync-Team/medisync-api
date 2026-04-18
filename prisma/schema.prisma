@@ -256,8 +256,9 @@ model Turno {
   preconsultaCompletadaAt DateTime? @map("preconsulta_completada_at")
   linkVideollamada    String?     @map("link_videollamada")
   notasCancelacion    String?     @map("notas_cancelacion")
-  googleEventId       String?     @map("google_event_id")
-  createdAt           DateTime    @default(now()) @map("created_at")
+  googleEventId          String?     @map("google_event_id")
+  googleEventIdPaciente  String?     @map("google_event_id_paciente")
+  createdAt              DateTime    @default(now()) @map("created_at")
   updatedAt           DateTime    @updatedAt @map("updated_at")
 
   profesional  Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)

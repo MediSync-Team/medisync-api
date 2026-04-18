@@ -9,7 +9,10 @@ import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../ser
 import { analyzePreconsulta } from '../services/preconsulta.service';
 import { createNotification } from '../services/notification.service';
 import { issueVideoTicket } from '../services/video-room.service';
-import { syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled } from '../services/calendar-sync.service';
+import {
+  syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
+  syncTurnoCreatedForPaciente, syncTurnoRescheduledForPaciente, syncTurnoCancelledForPaciente,
+} from '../services/calendar-sync.service';
 
 const router = Router();
 
@@ -437,8 +440,9 @@ router.post(
       }
 
       res.status(201).json(success({ turno: result, linkPago: null }));
-      // Fire-and-forget Google Calendar sync
+      // Fire-and-forget Google Calendar sync (profesional + paciente)
       syncTurnoCreated(result.id).catch(() => {});
+      syncTurnoCreatedForPaciente(result.id).catch(() => {});
   })
 );
 
@@ -602,8 +606,9 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   }
 
   res.json(success(turnoActualizado));
-  // Fire-and-forget Google Calendar sync
+  // Fire-and-forget Google Calendar sync (profesional + paciente)
   syncTurnoRescheduled(turnoActualizado.id).catch(() => {});
+  syncTurnoRescheduledForPaciente(turnoActualizado.id).catch(() => {});
 }));
 
 router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
@@ -733,8 +738,11 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   }
 
   res.json(success(turnoActualizado));
-  // Fire-and-forget Google Calendar sync on cancellation
-  if (estado === 'CANCELADO') syncTurnoCancelled(turnoActualizado.id).catch(() => {});
+  // Fire-and-forget Google Calendar sync on cancellation (profesional + paciente)
+  if (estado === 'CANCELADO') {
+    syncTurnoCancelled(turnoActualizado.id).catch(() => {});
+    syncTurnoCancelledForPaciente(turnoActualizado.id).catch(() => {});
+  }
 }));
 
 router.get('/:id/evolucion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
