@@ -186,7 +186,7 @@ router.post(
         where: { turnoId },
         update: {
           monto: precioFinal,
-          montoNeto: precioFinal * 0.9,
+          montoNeto: precioFinal,
           estado: 'PENDIENTE',
           mpPreferenciaId: data.id,
           cuponId,
@@ -195,7 +195,7 @@ router.post(
         create: {
           turnoId,
           monto: precioFinal,
-          montoNeto: precioFinal * 0.9,
+          montoNeto: precioFinal,
           estado: 'PENDIENTE',
           mpPreferenciaId: data.id,
           cuponId,
@@ -249,7 +249,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           create: {
             turnoId,
             monto: Number(payment.transaction_amount || 0),
-            montoNeto: Number(payment.transaction_amount || 0) * 0.9,
+            montoNeto: Number(payment.transaction_amount || 0),
             estado: 'APROBADO',
             mpPaymentId: String(paymentId),
             mpStatus: payment.status,

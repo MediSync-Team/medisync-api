@@ -226,4 +226,61 @@ describe('Turnos Logic', () => {
       expect(getDiaSemana(saturday)).toBe(6);
     });
   });
+
+  describe('Freemium plan limits', () => {
+    it('should limit FREE plan to 20 turnos per month', () => {
+      const checkPlanLimit = (plan: string, turnosThisMonth: number) => {
+        if (plan === 'FREE' && turnosThisMonth >= 20) {
+          return 'PLAN_LIMIT_REACHED';
+        }
+        return 'OK';
+      };
+
+      expect(checkPlanLimit('FREE', 19)).toBe('OK');
+      expect(checkPlanLimit('FREE', 20)).toBe('PLAN_LIMIT_REACHED');
+      expect(checkPlanLimit('FREE', 21)).toBe('PLAN_LIMIT_REACHED');
+    });
+
+    it('should allow unlimited turnos for PRO plan', () => {
+      const checkPlanLimit = (plan: string, turnosThisMonth: number) => {
+        if (plan === 'FREE' && turnosThisMonth >= 20) {
+          return 'PLAN_LIMIT_REACHED';
+        }
+        return 'OK';
+      };
+
+      expect(checkPlanLimit('PRO', 100)).toBe('OK');
+      expect(checkPlanLimit('PRO', 1000)).toBe('OK');
+    });
+
+    it('should count only non-cancelled turnos', () => {
+      const countValidTurnos = (turnos: { estado: string }[]) => {
+        return turnos.filter(t => t.estado !== 'CANCELADO').length;
+      };
+
+      const turnos = [
+        { estado: 'RESERVADO' },
+        { estado: 'CONFIRMADO' },
+        { estado: 'CANCELADO' },
+        { estado: 'COMPLETADO' },
+        { estado: 'CANCELADO' },
+      ];
+
+      expect(countValidTurnos(turnos)).toBe(3);
+    });
+
+    it('should reset count at start of new month', () => {
+      const isNewMonth = (date: Date, prevDate: Date) => {
+        return date.getMonth() !== prevDate.getMonth() || date.getFullYear() !== prevDate.getFullYear();
+      };
+
+      const jan15 = new Date('2024-01-15T12:00:00');
+      const feb1 = new Date('2024-02-01T12:00:00');
+      const feb15 = new Date('2024-02-15T12:00:00');
+
+      expect(isNewMonth(feb1, jan15)).toBe(true);
+      expect(isNewMonth(feb15, jan15)).toBe(true);
+      expect(isNewMonth(jan15, jan15)).toBe(false);
+    });
+  });
 });

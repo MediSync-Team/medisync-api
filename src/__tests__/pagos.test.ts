@@ -139,15 +139,15 @@ describe('Mercado Pago Integration', () => {
   });
 
   describe('Price calculations', () => {
-    it('should calculate net amount with 10% fee', () => {
-      const calculateNet = (gross: number, feePercent: number = 10) => {
+    it('should calculate net amount with 0% fee (freemium model)', () => {
+      const calculateNet = (gross: number, feePercent: number = 0) => {
         return gross * (1 - feePercent / 100);
       };
 
-      expect(calculateNet(1000)).toBe(900);
-      expect(calculateNet(1500)).toBe(1350);
+      expect(calculateNet(1000)).toBe(1000);
+      expect(calculateNet(1500)).toBe(1500);
       expect(calculateNet(0)).toBe(0);
-      expect(calculateNet(100)).toBe(90);
+      expect(calculateNet(100)).toBe(100);
     });
 
     it('should calculate fee amount', () => {

@@ -73,6 +73,11 @@ enum TipoDescuento {
   MONTO_FIJO
 }
 
+enum PlanProfesional {
+  FREE
+  PRO
+}
+
 enum Genero {
   MASCULINO
   FEMENINO
@@ -185,6 +190,9 @@ model Profesional {
   especialidad    Especialidad @relation(fields: [especialidadId], references: [id])
   especialidadId String       @map("especialidad_id")
   clinica         Clinica?     @relation(fields: [clinicaId], references: [id], onDelete: SetNull)
+  plan            PlanProfesional @default(FREE)
+  mpSuscripcionId String?      @map("mp_suscripcion_id")
+  planVenceAt     DateTime?    @map("plan_vence_at")
 
   disponibilidades Disponibilidad[]
   turnos           Turno[]
@@ -344,7 +352,7 @@ model Pago {
   id                  String      @id @default(uuid())
   turnoId             String      @unique @map("turno_id")
   monto               Decimal     @db.Decimal(10, 2)
-  comisionPorcentaje  Decimal     @default(10) @map("comision_porcentaje") @db.Decimal(5, 2)
+  comisionPorcentaje  Decimal     @default(0) @map("comision_porcentaje") @db.Decimal(5, 2)
   montoNeto           Decimal     @map("monto_neto") @db.Decimal(10, 2)
   estado              EstadoPago  @default(PENDIENTE)
   mpPreferenciaId     String?     @map("mp_preferencia_id")

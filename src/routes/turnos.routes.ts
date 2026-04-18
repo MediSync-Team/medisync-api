@@ -321,7 +321,30 @@ router.post(
       }
     }
 
-      const linkVideollamada = modalidad === 'VIRTUAL'
+      // FREE plan turno limit check
+    const prof = await prisma.profesional.findUnique({
+      where: { id: profesionalId },
+      select: { plan: true },
+    });
+    if (prof?.plan === 'FREE') {
+      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+      const count = await prisma.turno.count({
+        where: {
+          profesionalId,
+          fechaHora: { gte: startOfMonth },
+          estado: { notIn: ['CANCELADO'] },
+        },
+      });
+      if (count >= 20) {
+        throw new AppError(
+          403,
+          'PLAN_LIMIT_REACHED',
+          'El profesional alcanzó el límite de 20 turnos mensuales del plan Free'
+        );
+      }
+    }
+
+    const linkVideollamada = modalidad === 'VIRTUAL'
         ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
         : null;
 
