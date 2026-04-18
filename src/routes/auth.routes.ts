@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt';
 import { body, validationResult } from 'express-validator';
 import prisma from '../lib/prisma';
 import { generateToken, authMiddleware } from '../middleware/auth.middleware';
-import { asyncHandler, success, error, AppError } from '../utils/response';
+import { asyncHandler, success, AppError } from '../utils/response';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
 

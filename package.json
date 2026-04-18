@@ -17,7 +17,6 @@
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^5.10.0",
     "bcrypt": "^5.1.1",
-    "cloudinary": "^2.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",

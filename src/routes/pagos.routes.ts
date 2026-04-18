@@ -130,10 +130,6 @@ router.post(
     };
 
     try {
-      console.log('Creando preferencia...');
-      console.log('Token:', process.env.MP_ACCESS_TOKEN ? 'presente' : 'ausente');
-      console.log('Preference data:', JSON.stringify(preferenceData, null, 2));
-      
       const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
         method: 'POST',
         headers: {
@@ -144,8 +140,6 @@ router.post(
       });
 
       const data = await response.json() as MercadoPagoPreferenceResponse;
-      console.log('Respuesta MP status:', response.status);
-      console.log('Respuesta MP:', data);
 
       if (!response.ok || data.error) {
         const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
