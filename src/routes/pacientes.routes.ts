@@ -233,4 +233,102 @@ router.put('/:id/historia-clinica', authMiddleware('PROFESIONAL'), asyncHandler(
   res.json(success(updated));
 }));
 
+router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+
+  const ahora = new Date();
+  const hace12Meses = new Date(ahora.getFullYear() - 1, ahora.getMonth(), 1);
+
+  const [turnosPorEstado, turnosConProf, pagos, turnosPorMesRaw] = await Promise.all([
+    // Totals by status
+    prisma.turno.groupBy({
+      by: ['estado'],
+      where: { pacienteId: paciente.id },
+      _count: { id: true },
+    }),
+    // Most-visited professionals (top 5)
+    prisma.turno.groupBy({
+      by: ['profesionalId'],
+      where: { pacienteId: paciente.id, estado: { notIn: ['CANCELADO'] } },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
+    }),
+    // All approved payments
+    prisma.pago.findMany({
+      where: {
+        turno: { pacienteId: paciente.id },
+        estado: 'APROBADO',
+      },
+      include: {
+        turno: {
+          include: {
+            profesional: { include: { especialidad: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    // Turnos per month (last 12 months)
+    prisma.turno.findMany({
+      where: {
+        pacienteId: paciente.id,
+        fechaHora: { gte: hace12Meses },
+        estado: { notIn: ['CANCELADO'] },
+      },
+      select: { fechaHora: true, estado: true },
+    }),
+  ]);
+
+  // Resolve professional names for top-visited
+  const profIds = turnosConProf.map((t) => t.profesionalId);
+  const profData = profIds.length
+    ? await prisma.profesional.findMany({
+        where: { id: { in: profIds } },
+        select: { id: true, nombre: true, apellido: true, fotoUrl: true, especialidad: { select: { nombre: true } } },
+      })
+    : [];
+  const profMap = new Map(profData.map((p) => [p.id, p]));
+
+  const topProfesionales = turnosConProf.map((t) => ({
+    profesional: profMap.get(t.profesionalId) ?? null,
+    totalTurnos: t._count.id,
+  })).filter((t) => t.profesional !== null);
+
+  // Build monthly series
+  const monthlyMap = new Map<string, number>();
+  for (const t of turnosPorMesRaw) {
+    const key = `${t.fechaHora.getFullYear()}-${String(t.fechaHora.getMonth() + 1).padStart(2, '0')}`;
+    monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + 1);
+  }
+  const turnosPorMes = Array.from(monthlyMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([mes, total]) => ({ mes, total }));
+
+  // Status counts
+  const byEstado = Object.fromEntries(turnosPorEstado.map((e) => [e.estado, e._count.id]));
+  const totalTurnos = turnosPorEstado.reduce((acc, e) => acc + e._count.id, 0);
+  const totalGastado = pagos.reduce((acc, p) => acc + Number(p.monto), 0);
+
+  res.json(success({
+    totalTurnos,
+    completados: byEstado['COMPLETADO'] ?? 0,
+    cancelados: byEstado['CANCELADO'] ?? 0,
+    confirmados: byEstado['CONFIRMADO'] ?? 0,
+    reservados: byEstado['RESERVADO'] ?? 0,
+    totalGastado,
+    pagos: pagos.map((p) => ({
+      id: p.id,
+      monto: Number(p.monto),
+      fecha: p.createdAt,
+      profesional: `${p.turno.profesional.nombre} ${p.turno.profesional.apellido}`,
+      especialidad: p.turno.profesional.especialidad.nombre,
+      mpPaymentId: p.mpPaymentId,
+    })),
+    topProfesionales,
+    turnosPorMes,
+  }));
+}));
+
 export { router as pacientesRouter };
