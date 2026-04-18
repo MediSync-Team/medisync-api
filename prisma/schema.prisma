@@ -54,6 +54,13 @@ enum EstadoListaEspera {
   CANCELADA
 }
 
+enum TipoCertificado {
+  REPOSO
+  CONSULTA
+  APTITUD
+  LIBRE
+}
+
 enum TipoArchivo {
   EVOLUCION
   LABORATORIO
@@ -266,6 +273,7 @@ model Turno {
 
   evolucion    Evolucion?
   recetaIndicacion RecetaIndicacion?
+  certificado  CertificadoMedico?
   archivos     Archivo[]
   pago         Pago?
   resena       Resena?
@@ -454,4 +462,19 @@ model RecordatorioEnviado {
   @@unique([turnoId, tipo])
   @@index([enviadoAt])
   @@map("recordatorio_enviado")
+}
+
+model CertificadoMedico {
+  id          String           @id @default(uuid())
+  turnoId     String           @unique @map("turno_id")
+  tipo        TipoCertificado  @default(CONSULTA)
+  diagnostico String
+  texto       String
+  diasReposo  Int?             @map("dias_reposo")
+  emitidaAt   DateTime         @default(now()) @map("emitida_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  turno       Turno            @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@map("certificado_medico")
 }
