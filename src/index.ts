@@ -28,6 +28,7 @@ import { googleRouter } from './routes/google.routes';
 import { clinicasRouter } from './routes/clinicas.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
+import { expireStaleWaitlistNotifications } from './services/waitlist.service';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -127,6 +128,14 @@ cron.schedule('*/30 * * * *', async () => {
     await sendUpcomingAppointmentsReminders();
   } catch (err) {
     console.error('[reminders] scheduled job error:', err);
+  }
+});
+
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    await expireStaleWaitlistNotifications();
+  } catch (err) {
+    console.error('[waitlist] expiry job error:', err);
   }
 });
 
