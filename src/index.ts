@@ -23,6 +23,9 @@ import { listaEsperaRouter } from './routes/lista-espera.routes';
 import { resenasRouter } from './routes/resenas.routes';
 import { bloqueosRouter } from './routes/bloqueos.routes';
 import { adminRouter } from './routes/admin.routes';
+import { chatRouter } from './routes/chat.routes';
+import { googleRouter } from './routes/google.routes';
+import { clinicasRouter } from './routes/clinicas.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 
@@ -93,6 +96,9 @@ app.use('/api/lista-espera', listaEsperaRouter);
 app.use('/api/resenas', resenasRouter);
 app.use('/api/bloqueos', bloqueosRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/chat', chatRouter);
+app.use('/api/google', googleRouter);
+app.use('/api/clinicas', clinicasRouter);
 
 app.use(errorHandler);
 

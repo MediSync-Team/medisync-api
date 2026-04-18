@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
+import { sendWebPush } from './web-push.service';
 
 // ── SSE connection registry ──────────────────────────────────────────────────
 // Maps userId → array of open SSE Response objects (a user can have multiple tabs)
@@ -44,6 +45,18 @@ export interface CreateNotificationInput {
   link?: string;
 }
 
+// Maps notification tipo → Usuario push preference column
+const PUSH_PREF_MAP: Record<string, 'pushTurno' | 'pushCancelacion' | 'pushRecordatorio' | 'pushReceta' | 'pushChat'> = {
+  TURNO_RESERVADO:    'pushTurno',
+  TURNO_CONFIRMADO:   'pushTurno',
+  TURNO_REPROGRAMADO: 'pushTurno',
+  TURNO_CANCELADO:    'pushCancelacion',
+  RECORDATORIO_24H:   'pushRecordatorio',
+  RECORDATORIO_2H:    'pushRecordatorio',
+  RECETA_EMITIDA:     'pushReceta',
+  CHAT_MENSAJE:       'pushChat',
+};
+
 export async function createNotification(input: CreateNotificationInput) {
   const notif = await prisma.notificacion.create({
     data: {
@@ -65,6 +78,26 @@ export async function createNotification(input: CreateNotificationInput) {
     link:      notif.link,
     createdAt: notif.createdAt,
   });
+
+  // Web Push — only if user has this event type enabled
+  const prefKey = PUSH_PREF_MAP[input.tipo];
+  const shouldPush = await (async () => {
+    if (!prefKey) return true; // unknown types always push
+    const usuario = await prisma.usuario.findUnique({
+      where: { id: input.usuarioId },
+      select: { [prefKey]: true },
+    });
+    return usuario ? (usuario as any)[prefKey] !== false : true;
+  })();
+
+  if (shouldPush) {
+    sendWebPush(input.usuarioId, {
+      title: input.titulo,
+      body:  input.cuerpo,
+      tag:   input.tipo,
+      url:   input.link ?? '/',
+    }).catch((err) => console.error('[web-push] fire-and-forget error:', err));
+  }
 
   return notif;
 }

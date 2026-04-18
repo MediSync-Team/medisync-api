@@ -5,6 +5,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
 import { addSseClient, removeSseClient } from '../services/notification.service';
 import { verifyToken } from '../middleware/auth.middleware';
+import { vapidPublicKey, sendWebPush } from '../services/web-push.service';
 
 const router = Router();
 const ALLOWED_CHANNELS = ['EMAIL', 'WHATSAPP', 'IN_APP'] as const;
@@ -12,9 +13,22 @@ type AllowedChannel = typeof ALLOWED_CHANNELS[number];
 
 // ── GET /api/notifications/preferences ─────────────────────────────────────
 // Devuelve las preferencias de notificación del usuario autenticado.
+const PUSH_PREF_SELECT = {
+  pushTurno:        true,
+  pushCancelacion:  true,
+  pushRecordatorio: true,
+  pushReceta:       true,
+  pushChat:         true,
+} as const;
+
 router.get('/preferences', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const userId = req.user!.userId;
   const rol    = req.user!.rol;
+
+  const usuario = await prisma.usuario.findUnique({
+    where: { id: userId },
+    select: PUSH_PREF_SELECT,
+  });
 
   if (rol === 'PACIENTE') {
     const paciente = await prisma.paciente.findUnique({
@@ -28,20 +42,17 @@ router.get('/preferences', authMiddleware(), asyncHandler(async (req: AuthReques
       },
     });
     if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-    res.json(success(paciente));
+    res.json(success({ ...paciente, ...usuario }));
     return;
   }
 
   // PROFESIONAL
   const profesional = await prisma.profesional.findUnique({
     where: { usuarioId: userId },
-    select: {
-      notifEmail: true,
-      notifWhatsapp: true,
-    },
+    select: { notifEmail: true, notifWhatsapp: true },
   });
   if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
-  res.json(success(profesional));
+  res.json(success({ ...profesional, ...usuario }));
 }));
 
 // ── PUT /api/notifications/preferences ─────────────────────────────────────
@@ -58,26 +69,57 @@ router.put('/preferences', authMiddleware(), asyncHandler(async (req: AuthReques
     const paciente = await prisma.paciente.findUnique({ where: { usuarioId: userId } });
     if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
 
-    const updated = await prisma.paciente.update({
-      where: { usuarioId: userId },
-      data: {
-        aceptaRecordatorios:  toBool(body.aceptaRecordatorios,  paciente.aceptaRecordatorios),
-        notifEmail:           toBool(body.notifEmail,           paciente.notifEmail),
-        notifWhatsapp:        toBool(body.notifWhatsapp,        paciente.notifWhatsapp),
-        notifRecordatorio24h: toBool(body.notifRecordatorio24h, paciente.notifRecordatorio24h),
-        notifRecordatorio2h:  toBool(body.notifRecordatorio2h,  paciente.notifRecordatorio2h),
-      },
-      select: {
-        aceptaRecordatorios: true,
-        notifEmail: true,
-        notifWhatsapp: true,
-        notifRecordatorio24h: true,
-        notifRecordatorio2h: true,
-      },
-    });
-    res.json(success(updated));
+    const usuario = await prisma.usuario.findUnique({ where: { id: userId } });
+    if (!usuario) throw new AppError(404, 'NOT_FOUND', 'Usuario no encontrado');
+
+    const [updatedPaciente, updatedUsuario] = await Promise.all([
+      prisma.paciente.update({
+        where: { usuarioId: userId },
+        data: {
+          aceptaRecordatorios:  toBool(body.aceptaRecordatorios,  paciente.aceptaRecordatorios),
+          notifEmail:           toBool(body.notifEmail,           paciente.notifEmail),
+          notifWhatsapp:        toBool(body.notifWhatsapp,        paciente.notifWhatsapp),
+          notifRecordatorio24h: toBool(body.notifRecordatorio24h, paciente.notifRecordatorio24h),
+          notifRecordatorio2h:  toBool(body.notifRecordatorio2h,  paciente.notifRecordatorio2h),
+        },
+        select: {
+          aceptaRecordatorios: true,
+          notifEmail: true,
+          notifWhatsapp: true,
+          notifRecordatorio24h: true,
+          notifRecordatorio2h: true,
+        },
+      }),
+      prisma.usuario.update({
+        where: { id: userId },
+        data: {
+          pushTurno:        toBool(body.pushTurno,        usuario.pushTurno),
+          pushCancelacion:  toBool(body.pushCancelacion,  usuario.pushCancelacion),
+          pushRecordatorio: toBool(body.pushRecordatorio, usuario.pushRecordatorio),
+          pushReceta:       toBool(body.pushReceta,       usuario.pushReceta),
+          pushChat:         toBool(body.pushChat,         usuario.pushChat),
+        },
+        select: PUSH_PREF_SELECT,
+      }),
+    ]);
+    res.json(success({ ...updatedPaciente, ...updatedUsuario }));
     return;
   }
+
+  // Save push prefs on Usuario (applies to both roles)
+  const usuario = await prisma.usuario.findUnique({ where: { id: userId } });
+  if (!usuario) throw new AppError(404, 'NOT_FOUND', 'Usuario no encontrado');
+  const updatedUsuario = await prisma.usuario.update({
+    where: { id: userId },
+    data: {
+      pushTurno:        toBool(body.pushTurno,        usuario.pushTurno),
+      pushCancelacion:  toBool(body.pushCancelacion,  usuario.pushCancelacion),
+      pushRecordatorio: toBool(body.pushRecordatorio, usuario.pushRecordatorio),
+      pushReceta:       toBool(body.pushReceta,       usuario.pushReceta),
+      pushChat:         toBool(body.pushChat,         usuario.pushChat),
+    },
+    select: PUSH_PREF_SELECT,
+  });
 
   // PROFESIONAL
   const profesional = await prisma.profesional.findUnique({ where: { usuarioId: userId } });
@@ -89,12 +131,9 @@ router.put('/preferences', authMiddleware(), asyncHandler(async (req: AuthReques
       notifEmail:    toBool(body.notifEmail,    profesional.notifEmail),
       notifWhatsapp: toBool(body.notifWhatsapp, profesional.notifWhatsapp),
     },
-    select: {
-      notifEmail: true,
-      notifWhatsapp: true,
-    },
+    select: { notifEmail: true, notifWhatsapp: true },
   });
-  res.json(success(updatedProf));
+  res.json(success({ ...updatedProf, ...updatedUsuario }));
 }));
 
 // ── POST /api/notifications/test ────────────────────────────────────────────
@@ -224,6 +263,62 @@ router.patch('/read-all', authMiddleware(), asyncHandler(async (req: AuthRequest
     data: { leida: true },
   });
   res.json(success({ marked: count }));
+}));
+
+// ── GET /api/notifications/push/vapid-key ───────────────────────────────────
+// Returns the VAPID public key for the client to use when subscribing.
+router.get('/push/vapid-key', (_req, res) => {
+  res.json(success({ publicKey: vapidPublicKey }));
+});
+
+// ── POST /api/notifications/push/subscribe ──────────────────────────────────
+// Saves or updates a PushSubscription for the authenticated user.
+router.post('/push/subscribe', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { endpoint, keys, userAgent } = req.body as {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userAgent?: string;
+  };
+
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'endpoint, keys.p256dh y keys.auth son requeridos');
+  }
+
+  const sub = await prisma.pushSubscription.upsert({
+    where: { endpoint },
+    create: { usuarioId: userId, endpoint, p256dh: keys.p256dh, auth: keys.auth, userAgent },
+    update: { usuarioId: userId, p256dh: keys.p256dh, auth: keys.auth, userAgent },
+  });
+
+  res.json(success({ subscribed: true, id: sub.id }));
+}));
+
+// ── DELETE /api/notifications/push/subscribe ─────────────────────────────────
+// Removes a PushSubscription by endpoint.
+router.delete('/push/subscribe', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { endpoint } = req.body as { endpoint: string };
+
+  if (!endpoint) throw new AppError(400, 'VALIDATION_ERROR', 'endpoint es requerido');
+
+  await prisma.pushSubscription.deleteMany({
+    where: { endpoint, usuarioId: userId },
+  });
+
+  res.json(success({ unsubscribed: true }));
+}));
+
+// ── POST /api/notifications/push/test ───────────────────────────────────────
+// Sends a test push to the authenticated user's registered devices.
+router.post('/push/test', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  await sendWebPush(req.user!.userId, {
+    title: '🔔 MediSync — Notificaciones activas',
+    body: 'Las notificaciones push están funcionando correctamente.',
+    tag: 'push-test',
+    url: '/',
+  });
+  res.json(success({ ok: true }));
 }));
 
 export { router as notificationsRouter };

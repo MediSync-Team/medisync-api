@@ -10,7 +10,8 @@ export type NotificationEvent =
   | 'RECETA_EMITIDA'
   | 'LISTA_ESPERA_NOTIFICADA'
   | 'BIENVENIDA'
-  | 'PRUEBA';
+  | 'PRUEBA'
+  | 'INVITACION_CLINICA';
 
 export interface NotificationPayload {
   event: NotificationEvent;
@@ -116,6 +117,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     LISTA_ESPERA_NOTIFICADA: '🎉',
     BIENVENIDA: '👋',
     PRUEBA: '🧪',
+    INVITACION_CLINICA: '🏥',
   };
 
   const accentMap: Record<NotificationEvent, string> = {
@@ -129,6 +131,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     LISTA_ESPERA_NOTIFICADA: EMAIL_SUCCESS_COLOR,
     BIENVENIDA: EMAIL_BRAND_COLOR,
     PRUEBA: EMAIL_BRAND_COLOR,
+    INVITACION_CLINICA: EMAIL_BRAND_COLOR,
   };
 
   const icon = iconMap[event] ?? '📬';

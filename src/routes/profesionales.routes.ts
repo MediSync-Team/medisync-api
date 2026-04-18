@@ -14,6 +14,7 @@ router.get('/', asyncHandler(async (req, res) => {
     modalidad,
     fecha,
     disponibleEstaSemana,
+    obraSocial,
     orderBy: orderByParam,
     page = 1,
     limit = 10,
@@ -27,6 +28,11 @@ router.get('/', asyncHandler(async (req, res) => {
 
   if (especialidad) {
     where.especialidad = { nombre: { contains: String(especialidad), mode: 'insensitive' } };
+  }
+
+  if (obraSocial) {
+    // PostgreSQL array: has exact match. We normalise to uppercase on both ends.
+    where.obrasSociales = { has: String(obraSocial).trim().toUpperCase() };
   }
 
   if (precioMin || precioMax) {
@@ -208,7 +214,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 
 router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const authReq = req as AuthRequest;
-  const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl } = req.body;
+  const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl, obrasSociales } = req.body;
 
   const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: authReq.user!.userId } });
   if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
@@ -225,15 +231,19 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
 
   const profesional = await prisma.profesional.update({
     where: { id: req.params.id },
-    data: { 
-      nombre, 
-      apellido, 
-      bio, 
-      telefono, 
+    data: {
+      nombre,
+      apellido,
+      bio,
+      telefono,
       genero: genero || 'NO_ESPECIFICADO',
-      lugarAtencion, 
-      precioConsulta, 
-      fotoUrl 
+      lugarAtencion,
+      precioConsulta,
+      fotoUrl,
+      // Normalize to uppercase for consistent filtering
+      ...(Array.isArray(obrasSociales) && {
+        obrasSociales: obrasSociales.map((o: string) => o.trim().toUpperCase()).filter(Boolean),
+      }),
     },
   });
 

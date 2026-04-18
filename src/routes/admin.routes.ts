@@ -201,6 +201,140 @@ router.get('/turnos', asyncHandler(async (req, res) => {
   res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
 }));
 
+// ── Analytics ─────────────────────────────────────────────────────────────
+router.get('/analytics', asyncHandler(async (_req, res) => {
+  const now   = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1); // 12 months back
+
+  // ── Revenue per month (last 12 months) ───────────────────────────────────
+  const pagosAprobados = await prisma.pago.findMany({
+    where: { estado: 'APROBADO', createdAt: { gte: start } },
+    select: { monto: true, createdAt: true },
+  });
+
+  const revenueByMonth: Record<string, number> = {};
+  const turnosByMonth:  Record<string, number> = {};
+  for (let i = 11; i >= 0; i--) {
+    const d    = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key  = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    revenueByMonth[key] = 0;
+    turnosByMonth[key]  = 0;
+  }
+  for (const p of pagosAprobados) {
+    const d   = new Date(p.createdAt);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (revenueByMonth[key] !== undefined) revenueByMonth[key] += Number(p.monto);
+  }
+
+  // ── Turnos por mes ────────────────────────────────────────────────────────
+  const turnosRecientes = await prisma.turno.findMany({
+    where: { createdAt: { gte: start } },
+    select: { createdAt: true },
+  });
+  for (const t of turnosRecientes) {
+    const d   = new Date(t.createdAt);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (turnosByMonth[key] !== undefined) turnosByMonth[key]++;
+  }
+
+  // ── Turnos por especialidad ───────────────────────────────────────────────
+  const turnosPorEsp = await prisma.turno.groupBy({
+    by: ['profesionalId'],
+    _count: { id: true },
+  });
+  const profIds = turnosPorEsp.map(t => t.profesionalId);
+  const profs   = await prisma.profesional.findMany({
+    where: { id: { in: profIds } },
+    select: { id: true, especialidad: { select: { nombre: true } } },
+  });
+  const espMap: Record<string, number> = {};
+  const profEspMap = Object.fromEntries(profs.map(p => [p.id, p.especialidad.nombre]));
+  for (const row of turnosPorEsp) {
+    const esp = profEspMap[row.profesionalId] ?? 'Sin especialidad';
+    espMap[esp] = (espMap[esp] ?? 0) + row._count.id;
+  }
+  const turnosPorEspecialidad = Object.entries(espMap)
+    .map(([especialidad, total]) => ({ especialidad, total }))
+    .sort((a, b) => b.total - a.total);
+
+  // ── Top 10 profesionales ──────────────────────────────────────────────────
+  const topTurnosRaw = await prisma.turno.groupBy({
+    by: ['profesionalId'],
+    where: { estado: 'COMPLETADO' },
+    _count: { id: true },
+    orderBy: { _count: { id: 'desc' } },
+    take: 10,
+  });
+  const topIds = topTurnosRaw.map(r => r.profesionalId);
+
+  const [topProfsData, topRevenue] = await Promise.all([
+    prisma.profesional.findMany({
+      where: { id: { in: topIds } },
+      select: {
+        id: true, nombre: true, apellido: true,
+        especialidad: { select: { nombre: true } },
+      },
+    }),
+    prisma.pago.groupBy({
+      by: ['turnoId'],
+      where: {
+        estado: 'APROBADO',
+        turno: { profesionalId: { in: topIds } },
+      },
+      _sum: { monto: true },
+    }).then(async (rows) => {
+      // We need revenue per profesional — pivot via turno
+      const turnoIds = rows.map(r => r.turnoId);
+      const turnosConProf = await prisma.turno.findMany({
+        where: { id: { in: turnoIds } },
+        select: { id: true, profesionalId: true },
+      });
+      const turnoProf = Object.fromEntries(turnosConProf.map(t => [t.id, t.profesionalId]));
+      const rev: Record<string, number> = {};
+      for (const r of rows) {
+        const pid = turnoProf[r.turnoId];
+        if (pid) rev[pid] = (rev[pid] ?? 0) + Number(r._sum.monto ?? 0);
+      }
+      return rev;
+    }),
+  ]);
+
+  const topProfMap = Object.fromEntries(topProfsData.map(p => [p.id, p]));
+  const topProfesionales = topTurnosRaw.map(r => ({
+    id:              r.profesionalId,
+    nombre:          topProfMap[r.profesionalId]?.nombre ?? '',
+    apellido:        topProfMap[r.profesionalId]?.apellido ?? '',
+    especialidad:    topProfMap[r.profesionalId]?.especialidad.nombre ?? '',
+    turnosCompletados: r._count.id,
+    revenueTotal:    topRevenue[r.profesionalId] ?? 0,
+  }));
+
+  // ── Comisiones (5% sobre pagos aprobados como proxy) ─────────────────────
+  const revenueTotal    = Object.values(revenueByMonth).reduce((a, b) => a + b, 0);
+  const COMISION_RATE   = 0.05;
+  const comisionesTotal = revenueTotal * COMISION_RATE;
+
+  // ── Tasa de completado ────────────────────────────────────────────────────
+  const [totalT, completados, cancelados] = await Promise.all([
+    prisma.turno.count(),
+    prisma.turno.count({ where: { estado: 'COMPLETADO' } }),
+    prisma.turno.count({ where: { estado: 'CANCELADO' } }),
+  ]);
+  const tasaCompletado  = totalT > 0 ? Math.round((completados / totalT) * 100) : 0;
+  const tasaCancelacion = totalT > 0 ? Math.round((cancelados  / totalT) * 100) : 0;
+
+  res.json(success({
+    revenueByMonth,
+    turnosByMonth,
+    turnosPorEspecialidad,
+    topProfesionales,
+    revenueTotal,
+    comisionesTotal,
+    tasaCompletado,
+    tasaCancelacion,
+  }));
+}));
+
 // ── Especialidades CRUD ───────────────────────────────────────────────────
 router.post('/especialidades', asyncHandler(async (req, res) => {
   const { nombre, descripcion, icono } = req.body;

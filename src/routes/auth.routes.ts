@@ -14,7 +14,7 @@ router.post(
   [
     body('email').isEmail().normalizeEmail(),
     body('password').isLength({ min: 6 }),
-    body('rol').isIn(['PROFESIONAL', 'PACIENTE']),
+    body('rol').isIn(['PROFESIONAL', 'PACIENTE', 'CLINICA']),
     body('nombre').notEmpty().trim(),
     body('apellido').notEmpty().trim(),
     body('telefono').optional().matches(/^[\d\s\-\+\(\)]{8,20}$/),
@@ -63,10 +63,17 @@ router.post(
             genero: genero || 'NO_ESPECIFICADO',
           },
         } : undefined,
+        clinica: rol === 'CLINICA' ? {
+          create: {
+            nombre: `${nombre} ${apellido}`.trim(),
+            telefono: telefono || null,
+          },
+        } : undefined,
       },
       include: {
         profesional: true,
         paciente: true,
+        clinica: true,
       },
     });
 
@@ -79,7 +86,13 @@ router.post(
     sendNotification(['EMAIL'], {
       event: 'BIENVENIDA',
       title: `¡Bienvenido/a a MediSync, ${nombre}!`,
-      message: `Tu cuenta fue creada exitosamente. ${rol === 'PROFESIONAL' ? 'Ya podés configurar tu disponibilidad y empezar a recibir turnos.' : 'Ya podés buscar profesionales y reservar tu primer turno.'}`,
+      message: `Tu cuenta fue creada exitosamente. ${
+        rol === 'PROFESIONAL'
+          ? 'Ya podés configurar tu disponibilidad y empezar a recibir turnos.'
+          : rol === 'CLINICA'
+            ? 'Ya podés agregar profesionales a tu clínica y gestionar su agenda.'
+            : 'Ya podés buscar profesionales y reservar tu primer turno.'
+      }`,
       userEmail: email,
       meta: { nombre: displayName, rol },
     }).catch((err) => console.error('[auth] welcome email error:', err));
@@ -127,7 +140,11 @@ router.get('/me', authMiddleware(), asyncHandler(async (req: AuthRequest, res) =
   const authReq = req as AuthRequest;
   const user = await prisma.usuario.findUnique({
     where: { id: authReq.user!.userId },
-    include: { profesional: { include: { especialidad: true } }, paciente: true },
+    include: {
+      profesional: { include: { especialidad: true } },
+      paciente: true,
+      clinica: true,
+    },
   });
 
   if (!user) {

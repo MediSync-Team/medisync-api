@@ -14,7 +14,7 @@ function getJwtSecret(): string {
 export interface JwtPayload {
   userId: string;
   email: string;
-  rol: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN';
+  rol: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN' | 'CLINICA';
 }
 
 export interface AuthRequest extends Request {
@@ -29,7 +29,9 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, getJwtSecret()) as JwtPayload;
 }
 
-export function authMiddleware(requiredRol?: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN') {
+type AllowedRol = 'PROFESIONAL' | 'PACIENTE' | 'ADMIN' | 'CLINICA';
+
+export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
 
@@ -42,8 +44,11 @@ export function authMiddleware(requiredRol?: 'PROFESIONAL' | 'PACIENTE' | 'ADMIN
       const payload = verifyToken(token);
       req.user = payload;
 
-      if (requiredRol && payload.rol !== requiredRol) {
-        return res.status(403).json(error('FORBIDDEN', 'Sin permisos'));
+      if (requiredRol) {
+        const allowed = Array.isArray(requiredRol) ? requiredRol : [requiredRol];
+        if (!allowed.includes(payload.rol as AllowedRol)) {
+          return res.status(403).json(error('FORBIDDEN', 'Sin permisos'));
+        }
       }
 
       next();

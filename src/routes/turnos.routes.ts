@@ -9,6 +9,7 @@ import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../ser
 import { analyzePreconsulta } from '../services/preconsulta.service';
 import { createNotification } from '../services/notification.service';
 import { issueVideoTicket } from '../services/video-room.service';
+import { syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled } from '../services/calendar-sync.service';
 
 const router = Router();
 
@@ -75,6 +76,7 @@ router.get('/mi-historial', authMiddleware('PACIENTE'), asyncHandler(async (req:
         evolucion: true,
         recetaIndicacion: true,
         archivos: true,
+        resena: true,
       },
       orderBy: { fechaHora: 'desc' },
       skip,
@@ -435,6 +437,8 @@ router.post(
       }
 
       res.status(201).json(success({ turno: result, linkPago: null }));
+      // Fire-and-forget Google Calendar sync
+      syncTurnoCreated(result.id).catch(() => {});
   })
 );
 
@@ -598,6 +602,8 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   }
 
   res.json(success(turnoActualizado));
+  // Fire-and-forget Google Calendar sync
+  syncTurnoRescheduled(turnoActualizado.id).catch(() => {});
 }));
 
 router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
@@ -727,6 +733,8 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   }
 
   res.json(success(turnoActualizado));
+  // Fire-and-forget Google Calendar sync on cancellation
+  if (estado === 'CANCELADO') syncTurnoCancelled(turnoActualizado.id).catch(() => {});
 }));
 
 router.get('/:id/evolucion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
@@ -819,7 +827,13 @@ router.put('/:id/preconsulta', authMiddleware('PACIENTE'), asyncHandler(async (r
     temperaturaNormalizada = Math.round(temperatura * 10) / 10;
   }
 
-  const analysis = analyzePreconsulta({
+  // Load especialidad name for AI context
+  const profConEspecialidad = await prisma.profesional.findUnique({
+    where: { id: turno.profesionalId },
+    include: { especialidad: { select: { nombre: true } } },
+  });
+
+  const analysis = await analyzePreconsulta({
     motivo: motivo.trim(),
     sintomas: sintomas.trim(),
     escalaDolor,
@@ -827,6 +841,7 @@ router.put('/:id/preconsulta', authMiddleware('PACIENTE'), asyncHandler(async (r
     inicioSintomas: inicioNormalizado,
     temperatura: temperaturaNormalizada,
     notasPaciente: notasNormalizadas,
+    especialidad: profConEspecialidad?.especialidad?.nombre ?? null,
   });
 
   const updated = await prisma.turno.update({
@@ -872,6 +887,7 @@ router.put('/:id/preconsulta', authMiddleware('PACIENTE'), asyncHandler(async (r
     flags: updated.preconsultaFlags,
     resumen: updated.preconsultaResumen,
     completadaAt: updated.preconsultaCompletadaAt,
+    aiGenerated: analysis.aiGenerated,
   }));
 }));
 

@@ -16,6 +16,14 @@ enum Rol {
   PROFESIONAL
   PACIENTE
   ADMIN
+  CLINICA
+}
+
+enum EstadoInvitacion {
+  PENDIENTE
+  ACEPTADA
+  RECHAZADA
+  EXPIRADA
 }
 
 enum Modalidad {
@@ -78,13 +86,55 @@ model Usuario {
   mpAccessToken   String?  @map("mp_access_token")
   mpRefreshToken  String?  @map("mp_refresh_token")
   mpVendedorId    String?  @map("mp_vendedor_id")
+  // Push notification preferences (granular per event type)
+  pushTurno        Boolean  @default(true)  @map("push_turno")
+  pushCancelacion  Boolean  @default(true)  @map("push_cancelacion")
+  pushRecordatorio Boolean  @default(true)  @map("push_recordatorio")
+  pushReceta       Boolean  @default(true)  @map("push_receta")
+  pushChat         Boolean  @default(true)  @map("push_chat")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   profesional     Profesional?
   paciente        Paciente?
+  clinica         Clinica?
 
   @@map("usuario")
+}
+
+model Clinica {
+  id          String   @id @default(uuid())
+  usuarioId   String   @unique @map("usuario_id")
+  nombre      String
+  descripcion String?
+  logoUrl     String?  @map("logo_url")
+  direccion   String?
+  telefono    String?
+  website     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  usuario      Usuario              @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  profesionales Profesional[]
+  invitaciones  InvitacionClinica[]
+
+  @@map("clinica")
+}
+
+model InvitacionClinica {
+  id         String           @id @default(uuid())
+  clinicaId  String           @map("clinica_id")
+  email      String
+  token      String           @unique @default(uuid())
+  estado     EstadoInvitacion @default(PENDIENTE)
+  expiresAt  DateTime         @map("expires_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  clinica    Clinica @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+
+  @@unique([clinicaId, email])
+  @@index([token])
+  @@map("invitacion_clinica")
 }
 
 model Especialidad {
@@ -110,16 +160,19 @@ model Profesional {
   precioConsulta  Decimal  @default(0) @map("precio_consulta") @db.Decimal(10, 2)
   bio             String?
   lugarAtencion   String?  @map("lugar_atencion")
+  obrasSociales   String[] @map("obras_sociales")
   fotoUrl         String?  @map("foto_url")
   activo          Boolean  @default(true)
   notifEmail      Boolean  @default(true) @map("notif_email")
   notifWhatsapp   Boolean  @default(false) @map("notif_whatsapp")
+  clinicaId       String?  @map("clinica_id")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   usuario         Usuario      @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
   especialidad    Especialidad @relation(fields: [especialidadId], references: [id])
   especialidadId String       @map("especialidad_id")
+  clinica         Clinica?     @relation(fields: [clinicaId], references: [id], onDelete: SetNull)
 
   disponibilidades Disponibilidad[]
   turnos           Turno[]
@@ -203,6 +256,7 @@ model Turno {
   preconsultaCompletadaAt DateTime? @map("preconsulta_completada_at")
   linkVideollamada    String?     @map("link_videollamada")
   notasCancelacion    String?     @map("notas_cancelacion")
+  googleEventId       String?     @map("google_event_id")
   createdAt           DateTime    @default(now()) @map("created_at")
   updatedAt           DateTime    @updatedAt @map("updated_at")
 
@@ -214,6 +268,7 @@ model Turno {
   archivos     Archivo[]
   pago         Pago?
   resena       Resena?
+  chatMensajes ChatMensaje[]
 
   @@unique([profesionalId, fechaHora])
   @@index([profesionalId, fechaHora])
@@ -358,6 +413,35 @@ model Notificacion {
   @@index([usuarioId, leida])
   @@index([usuarioId, createdAt])
   @@map("notificacion")
+}
+
+model PushSubscription {
+  id         String   @id @default(uuid())
+  usuarioId  String   @map("usuario_id")
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([usuarioId])
+  @@map("push_subscription")
+}
+
+model ChatMensaje {
+  id           String    @id @default(uuid())
+  turnoId      String    @map("turno_id")
+  remitenteId  String    @map("remitente_id")
+  contenido    String
+  leidoAt      DateTime? @map("leido_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  turno        Turno     @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+
+  @@index([turnoId, createdAt])
+  @@index([remitenteId])
+  @@map("chat_mensaje")
 }
 
 model RecordatorioEnviado {
