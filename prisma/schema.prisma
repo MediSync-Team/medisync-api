@@ -68,6 +68,11 @@ enum TipoArchivo {
   OTRO
 }
 
+enum TipoDescuento {
+  PORCENTAJE
+  MONTO_FIJO
+}
+
 enum Genero {
   MASCULINO
   FEMENINO
@@ -186,6 +191,7 @@ model Profesional {
   listaEspera      ListaEspera[]
   resenas          Resena[]
   bloqueos         BloqueoDisponibilidad[]
+  cupones          Cupon[]
 
   @@map("profesional")
 }
@@ -344,12 +350,34 @@ model Pago {
   mpPreferenciaId     String?     @map("mp_preferencia_id")
   mpPaymentId         String?     @map("mp_payment_id")
   mpStatus            String?     @map("mp_status")
+  cuponId             String?     @map("cupon_id")
+  montoDescuento      Decimal?    @map("monto_descuento") @db.Decimal(10, 2)
   createdAt           DateTime    @default(now()) @map("created_at")
   updatedAt           DateTime    @updatedAt @map("updated_at")
 
   turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  cupon Cupon? @relation(fields: [cuponId], references: [id])
 
   @@map("pago")
+}
+
+model Cupon {
+  id            String        @id @default(uuid())
+  profesionalId String        @map("profesional_id")
+  codigo        String        @unique
+  tipo          TipoDescuento @default(PORCENTAJE)
+  valor         Decimal       @db.Decimal(10, 2)
+  descripcion   String?
+  activo        Boolean       @default(true)
+  maxUsos       Int?          @map("max_usos")
+  usosActuales  Int           @default(0) @map("usos_actuales")
+  expiresAt     DateTime?     @map("expires_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  profesional   Profesional   @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+  pagos         Pago[]
+
+  @@map("cupon")
 }
 
 model ListaEspera {

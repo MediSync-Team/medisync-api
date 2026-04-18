@@ -68,7 +68,7 @@ router.post(
   '/crear-preferencia',
   authMiddleware('PACIENTE'),
   asyncHandler(async (req: AuthRequest, res) => {
-    const { turnoId } = req.body;
+    const { turnoId, cuponCodigo } = req.body;
 
     const turno = await prisma.turno.findUnique({
       where: { id: turnoId },
@@ -99,18 +99,53 @@ router.post(
         where: { id: turnoId },
         data: { estado: 'CONFIRMADO' },
       });
-      res.json(success({ 
-        necesitaPago: false, 
-        mensaje: 'Turno confirmado sin pago' 
+      res.json(success({
+        necesitaPago: false,
+        mensaje: 'Turno confirmado sin pago'
       }));
       return;
+    }
+
+    let precioFinal = precio;
+    let cuponId: string | null = null;
+    let montoDescuento: number | null = null;
+
+    // Validate and apply coupon if provided
+    if (cuponCodigo) {
+      const codigoUpper = cuponCodigo.toUpperCase();
+      const cupon = await prisma.cupon.findUnique({ where: { codigo: codigoUpper } });
+
+      if (!cupon) {
+        throw new AppError(400, 'INVALID_COUPON', 'El código de cupón no es válido');
+      }
+      if (!cupon.activo) {
+        throw new AppError(400, 'INACTIVE_COUPON', 'El cupón está inactivo');
+      }
+      if (cupon.profesionalId !== turno.profesionalId) {
+        throw new AppError(400, 'COUPON_NOT_FOR_PROFESSIONAL', 'El cupón no es válido para este profesional');
+      }
+      if (cupon.expiresAt && cupon.expiresAt < new Date()) {
+        throw new AppError(400, 'EXPIRED_COUPON', 'El cupón ha expirado');
+      }
+      if (cupon.maxUsos && cupon.usosActuales >= cupon.maxUsos) {
+        throw new AppError(400, 'COUPON_EXHAUSTED', 'El cupón ha alcanzado el máximo de usos');
+      }
+
+      // Calculate discount
+      if (cupon.tipo === 'PORCENTAJE') {
+        montoDescuento = (precio * Number(cupon.valor)) / 100;
+      } else {
+        montoDescuento = Number(cupon.valor);
+      }
+      precioFinal = Math.max(0, precio - montoDescuento);
+      cuponId = cupon.id;
     }
 
     const preferenceData = {
       items: [
         {
           title: `Consulta con ${turno.profesional.nombre} ${turno.profesional.apellido} - ${turno.profesional.especialidad.nombre}`,
-          unit_price: precio,
+          unit_price: precioFinal,
           quantity: 1,
           currency_id: 'ARS',
         },
@@ -150,17 +185,21 @@ router.post(
       await prisma.pago.upsert({
         where: { turnoId },
         update: {
-          monto: precio,
-          montoNeto: precio * 0.9,
+          monto: precioFinal,
+          montoNeto: precioFinal * 0.9,
           estado: 'PENDIENTE',
           mpPreferenciaId: data.id,
+          cuponId,
+          montoDescuento,
         },
         create: {
           turnoId,
-          monto: precio,
-          montoNeto: precio * 0.9,
+          monto: precioFinal,
+          montoNeto: precioFinal * 0.9,
           estado: 'PENDIENTE',
           mpPreferenciaId: data.id,
+          cuponId,
+          montoDescuento,
         },
       });
 
@@ -215,7 +254,16 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             mpPaymentId: String(paymentId),
             mpStatus: payment.status,
           },
+          include: { cupon: true },
         });
+
+        // Increment coupon usage if one was used
+        if (pago.cuponId) {
+          await prisma.cupon.update({
+            where: { id: pago.cuponId },
+            data: { usosActuales: { increment: 1 } },
+          });
+        }
 
         const turno = await prisma.turno.update({
           where: { id: turnoId },
