@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { EstadoTurno } from '@prisma/client';
+import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
@@ -13,8 +14,22 @@ import {
   syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
   syncTurnoCreatedForPaciente, syncTurnoRescheduledForPaciente, syncTurnoCancelledForPaciente,
 } from '../services/calendar-sync.service';
+import rateLimit from 'express-rate-limit';
 
 const router = Router();
+
+// Aggressive rate limiting for guest bookings (5 per minute)
+const bookingLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiadas solicitudes de reserva. Intenta más tarde.' } },
+  skip: (req: any) => {
+    // Don't rate limit authenticated pacientes
+    return req.user?.rol === 'PACIENTE';
+  },
+});
 
 async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
   const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
@@ -239,6 +254,7 @@ router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) 
 
 router.post(
   '/reservar',
+  bookingLimiter,
   [
     body('profesionalId').isUUID(),
     body('fechaHora').isISO8601(),
@@ -303,21 +319,41 @@ router.post(
       const existente = await prisma.paciente.findFirst({
         where: { email },
       });
-      
+
       if (existente) {
         pacienteId = existente.id;
       } else {
-        const paciente = await prisma.paciente.create({
+        // For guest bookings, create a verification token and send confirmation email
+        const token = crypto.randomBytes(32).toString('hex');
+        await prisma.bookingVerification.create({
           data: {
-            usuarioId: 'guest-' + email,
-            nombre: pacienteData.nombre,
-            apellido: pacienteData.apellido,
+            token,
             email,
-            telefono: pacienteData.telefono,
-            dni: pacienteData.dni,
+            nombre: pacienteData.nombre || 'Guest',
+            apellido: pacienteData.apellido || 'User',
+            profesionalId,
+            fechaHora: fechaHoraDate,
+            modalidad,
+            telefonoPaciente: pacienteData.telefono,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hour expiry
           },
         });
-        pacienteId = paciente.id;
+
+        // Send confirmation email
+        const confirmUrl = `${process.env.FRONTEND_URL}/auth/confirmar-turno?token=${token}`;
+        sendNotification(['EMAIL'], {
+          event: 'BOOKING_CONFIRMATION',
+          title: 'Confirmá tu reserva de turno',
+          message: `Haz clic en el enlace para confirmar tu reserva. Este enlace vence en 24 horas.`,
+          userEmail: email,
+          meta: { confirmUrl, nombre: pacienteData.nombre },
+        }).catch((err) => console.error('[turnos] confirmation email error:', err));
+
+        res.status(202).json(success({
+          message: 'Verifica tu email para confirmar la reserva',
+          email,
+        }));
+        return;
       }
     }
 
@@ -1135,6 +1171,99 @@ router.get('/:id/auditoria-cancelacion', authMiddleware(), asyncHandler(async (r
   });
 
   res.json(success(auditoria || null));
+}));
+
+// POST /api/turnos/confirmar-reserva?token=...
+router.post('/confirmar-reserva', [
+  body('token').isString().isLength({ min: 32 }),
+], asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Token inválido');
+  }
+
+  const { token } = req.body;
+
+  const verification = await prisma.bookingVerification.findUnique({
+    where: { token },
+  });
+
+  if (!verification) {
+    throw new AppError(400, 'INVALID_TOKEN', 'Token de confirmación inválido o expirado');
+  }
+
+  if (new Date() > verification.expiresAt) {
+    await prisma.bookingVerification.delete({ where: { token } });
+    throw new AppError(400, 'EXPIRED_TOKEN', 'El enlace de confirmación ha expirado');
+  }
+
+  // Create or find paciente
+  let paciente = await prisma.paciente.findFirst({
+    where: { email: verification.email },
+  });
+
+  if (!paciente) {
+    paciente = await prisma.paciente.create({
+      data: {
+        usuarioId: 'guest-' + verification.email,
+        nombre: verification.nombre,
+        apellido: verification.apellido,
+        email: verification.email,
+        telefono: verification.telefonoPaciente,
+        genero: 'NO_ESPECIFICADO',
+      },
+    });
+  }
+
+  // Create the actual turno
+  const linkVideollamada = verification.modalidad === 'VIRTUAL'
+    ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
+    : null;
+
+  const turno = await prisma.$transaction(async (tx) => {
+    const existingStart = verification.fechaHora.getTime();
+    const existingEnd = existingStart + 30 * 60 * 1000;
+
+    const existente = await tx.turno.findFirst({
+      where: {
+        profesionalId: verification.profesionalId,
+        fechaHora: {
+          gte: new Date(existingStart - 30 * 60 * 1000),
+          lte: new Date(existingEnd + 30 * 60 * 1000),
+        },
+        estado: { notIn: ['CANCELADO'] },
+      },
+    });
+
+    if (existente) {
+      throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario ya fue reservado');
+    }
+
+    return tx.turno.create({
+      data: {
+        profesionalId: verification.profesionalId,
+        pacienteId: paciente.id,
+        fechaHora: verification.fechaHora,
+        modalidad: verification.modalidad as any,
+        linkVideollamada,
+        estado: 'RESERVADO',
+      },
+    });
+  });
+
+  // Clean up verification record
+  await prisma.bookingVerification.delete({ where: { token } });
+
+  // Send confirmation email
+  sendNotification(['EMAIL'], {
+    event: 'BOOKING_CONFIRMED',
+    title: 'Turno confirmado',
+    message: `Tu turno ha sido confirmado. Recibirás más detalles pronto.`,
+    userEmail: verification.email,
+    meta: { turnoId: turno.id },
+  }).catch(() => {});
+
+  res.json(success({ turno, message: 'Turno confirmado exitosamente' }));
 }));
 
 export { router as turnosRouter };

@@ -543,3 +543,22 @@ model CertificadoMedico {
 
   @@map("certificado_medico")
 }
+
+model BookingVerification {
+  id                String   @id @default(uuid())
+  token             String   @unique
+  email             String
+  nombre            String
+  apellido          String
+  profesionalId     String   @map("profesional_id")
+  fechaHora         DateTime @map("fecha_hora")
+  modalidad         String
+  telefonoPaciente  String?  @map("telefono_paciente")
+  expiresAt         DateTime @map("expires_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([email])
+  @@index([expiresAt])
+  @@map("booking_verification")
+}

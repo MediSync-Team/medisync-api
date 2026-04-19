@@ -11,7 +11,9 @@ export type NotificationEvent =
   | 'LISTA_ESPERA_NOTIFICADA'
   | 'BIENVENIDA'
   | 'PRUEBA'
-  | 'INVITACION_CLINICA';
+  | 'INVITACION_CLINICA'
+  | 'BOOKING_CONFIRMATION'
+  | 'BOOKING_CONFIRMED';
 
 export interface NotificationPayload {
   event: NotificationEvent;
@@ -118,6 +120,8 @@ function buildEmailHtml(payload: NotificationPayload): string {
     BIENVENIDA: '👋',
     PRUEBA: '🧪',
     INVITACION_CLINICA: '🏥',
+    BOOKING_CONFIRMATION: '📧',
+    BOOKING_CONFIRMED: '✅',
   };
 
   const accentMap: Record<NotificationEvent, string> = {
@@ -132,6 +136,8 @@ function buildEmailHtml(payload: NotificationPayload): string {
     BIENVENIDA: EMAIL_BRAND_COLOR,
     PRUEBA: EMAIL_BRAND_COLOR,
     INVITACION_CLINICA: EMAIL_BRAND_COLOR,
+    BOOKING_CONFIRMATION: EMAIL_BRAND_COLOR,
+    BOOKING_CONFIRMED: EMAIL_SUCCESS_COLOR,
   };
 
   const icon = iconMap[event] ?? '📬';
