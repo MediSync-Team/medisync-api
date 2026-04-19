@@ -158,6 +158,51 @@ router.get('/me', authMiddleware(), asyncHandler(async (req: AuthRequest, res) =
   res.json(success(user));
 }));
 
+// ── SSO Code Exchange Store ──
+// Short-lived single-use codes so the JWT never appears in the redirect URL.
+
+interface SSOPendingCode {
+  token: string;
+  dest: string;
+  expiresAt: number; // ms epoch
+}
+
+const ssoPendingCodes = new Map<string, SSOPendingCode>();
+
+// Purge expired entries every 60 s to avoid unbounded growth.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of ssoPendingCodes) {
+    if (v.expiresAt < now) ssoPendingCodes.delete(k);
+  }
+}, 60_000);
+
+function createSSOCode(token: string, dest: string): string {
+  const code = crypto.randomUUID();
+  ssoPendingCodes.set(code, { token, dest, expiresAt: Date.now() + 30_000 });
+  return code;
+}
+
+// POST /api/auth/exchange-code  { code } → { token, dest }
+router.post('/exchange-code', asyncHandler(async (req, res) => {
+  const { code } = req.body;
+  if (!code || typeof code !== 'string') {
+    throw new AppError(400, 'MISSING_CODE', 'Código requerido');
+  }
+
+  const entry = ssoPendingCodes.get(code);
+  if (!entry) {
+    throw new AppError(400, 'INVALID_CODE', 'Código inválido o expirado');
+  }
+  if (Date.now() > entry.expiresAt) {
+    ssoPendingCodes.delete(code);
+    throw new AppError(400, 'EXPIRED_CODE', 'Código expirado');
+  }
+
+  ssoPendingCodes.delete(code); // single-use
+  res.json(success({ token: entry.token, dest: entry.dest }));
+}));
+
 // ── SSO Helper ──
 
 interface SSOUserInput {
@@ -275,8 +320,9 @@ router.get('/google/callback', asyncHandler(async (req, res) => {
 
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
     const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
+    const ssoCode = createSSOCode(token, dest);
 
-    res.redirect(`${process.env.FRONTEND_URL}${dest}?token=${token}&isNew=${isNew}`);
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
   } catch (err: any) {
     const errorCode = err.code || 'SSO_ERROR';
     const errorMsg = err.message || 'Error en autenticación';
@@ -324,8 +370,9 @@ router.get('/microsoft/callback', asyncHandler(async (req, res) => {
 
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
     const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
+    const ssoCode = createSSOCode(token, dest);
 
-    res.redirect(`${process.env.FRONTEND_URL}${dest}?token=${token}&isNew=${isNew}`);
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
   } catch (err: any) {
     const errorCode = err.code || 'SSO_ERROR';
     const errorMsg = err.message || 'Error en autenticación';
