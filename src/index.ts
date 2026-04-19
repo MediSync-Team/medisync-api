@@ -72,8 +72,8 @@ app.use(cors({
   credentials: true,
 }));
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50kb' })); // Prevent memory exhaustion; larger payloads rejected with 413
+app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 const authLimiter = rateLimit({
