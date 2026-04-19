@@ -186,13 +186,22 @@ interface SSOPendingCode {
   expiresAt: number; // ms epoch
 }
 
+interface OAuthNonce {
+  rol: string;
+  expiresAt: number; // ms epoch
+}
+
 const ssoPendingCodes = new Map<string, SSOPendingCode>();
+const oauthNonces = new Map<string, OAuthNonce>();
 
 // Purge expired entries every 60 s to avoid unbounded growth.
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of ssoPendingCodes) {
     if (v.expiresAt < now) ssoPendingCodes.delete(k);
+  }
+  for (const [k, v] of oauthNonces) {
+    if (v.expiresAt < now) oauthNonces.delete(k);
   }
 }, 60_000);
 
@@ -312,7 +321,17 @@ router.get('/google', (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
   }
 
-  const state = Buffer.from(JSON.stringify({ rol, nonce: crypto.randomUUID() })).toString('base64');
+  const nonce = crypto.randomUUID();
+  oauthNonces.set(nonce, { rol, expiresAt: Date.now() + 10 * 60 * 1000 }); // 10 min TTL
+  res.cookie('oauth_nonce', nonce, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
+    path: '/',
+  });
+
+  const state = Buffer.from(JSON.stringify({ nonce })).toString('base64');
   const url = getGoogleAuthUrl(state);
   res.redirect(url);
 });
@@ -320,6 +339,7 @@ router.get('/google', (req, res) => {
 // GET /api/auth/google/callback?code=...&state=...
 router.get('/google/callback', asyncHandler(async (req, res) => {
   const { code, error, state } = req.query as Record<string, string | undefined>;
+  const cookieNonce = req.cookies?.oauth_nonce;
 
   if (error) {
     return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${error}`);
@@ -330,8 +350,24 @@ router.get('/google/callback', asyncHandler(async (req, res) => {
   }
 
   try {
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { rol: string };
-    const rol = stateData.rol;
+    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { nonce: string };
+    const nonce = stateData.nonce;
+
+    // Verify nonce matches cookie and is in the map (CSRF protection)
+    if (!cookieNonce || !nonce || cookieNonce !== nonce) {
+      throw new AppError(400, 'INVALID_NONCE', 'Nonce no válido o expirado');
+    }
+
+    const nonceData = oauthNonces.get(nonce);
+    if (!nonceData || Date.now() > nonceData.expiresAt) {
+      oauthNonces.delete(nonce);
+      throw new AppError(400, 'EXPIRED_NONCE', 'Nonce expirado');
+    }
+
+    const rol = nonceData.rol;
+    oauthNonces.delete(nonce); // single-use
+    res.clearCookie('oauth_nonce', { path: '/' });
+
     const googleUser = await exchangeGoogleCode(code);
 
     const { user, isNew } = await upsertSSOUser({
@@ -370,7 +406,17 @@ router.get('/microsoft', (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
   }
 
-  const state = Buffer.from(JSON.stringify({ rol, nonce: crypto.randomUUID() })).toString('base64');
+  const nonce = crypto.randomUUID();
+  oauthNonces.set(nonce, { rol, expiresAt: Date.now() + 10 * 60 * 1000 }); // 10 min TTL
+  res.cookie('oauth_nonce', nonce, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
+    path: '/',
+  });
+
+  const state = Buffer.from(JSON.stringify({ nonce })).toString('base64');
   const url = getMicrosoftAuthUrl(state);
   res.redirect(url);
 });
@@ -378,6 +424,7 @@ router.get('/microsoft', (req, res) => {
 // GET /api/auth/microsoft/callback?code=...&state=...
 router.get('/microsoft/callback', asyncHandler(async (req, res) => {
   const { code, error, state } = req.query as Record<string, string | undefined>;
+  const cookieNonce = req.cookies?.oauth_nonce;
 
   if (error) {
     return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${error}`);
@@ -388,8 +435,24 @@ router.get('/microsoft/callback', asyncHandler(async (req, res) => {
   }
 
   try {
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { rol: string };
-    const rol = stateData.rol;
+    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { nonce: string };
+    const nonce = stateData.nonce;
+
+    // Verify nonce matches cookie and is in the map (CSRF protection)
+    if (!cookieNonce || !nonce || cookieNonce !== nonce) {
+      throw new AppError(400, 'INVALID_NONCE', 'Nonce no válido o expirado');
+    }
+
+    const nonceData = oauthNonces.get(nonce);
+    if (!nonceData || Date.now() > nonceData.expiresAt) {
+      oauthNonces.delete(nonce);
+      throw new AppError(400, 'EXPIRED_NONCE', 'Nonce expirado');
+    }
+
+    const rol = nonceData.rol;
+    oauthNonces.delete(nonce); // single-use
+    res.clearCookie('oauth_nonce', { path: '/' });
+
     const microsoftUser = await exchangeMicrosoftCode(code);
 
     const { user, isNew } = await upsertSSOUser({
