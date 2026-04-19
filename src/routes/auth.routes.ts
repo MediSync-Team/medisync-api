@@ -124,6 +124,10 @@ router.post(
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Credenciales inválidas');
     }
 
+    if (!user.passwordHash) {
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Este usuario se registró con SSO. Iniciá sesión con Google o Microsoft.');
+    }
+
     const validPassword = await bcrypt.compare(password, user.passwordHash);
     if (!validPassword) {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Credenciales inválidas');
@@ -152,6 +156,181 @@ router.get('/me', authMiddleware(), asyncHandler(async (req: AuthRequest, res) =
   }
 
   res.json(success(user));
+}));
+
+// ── SSO Helper ──
+
+interface SSOUserInput {
+  provider: 'google' | 'microsoft';
+  providerAccountId: string;
+  email: string;
+  nombre: string;
+  apellido: string;
+  fotoUrl?: string;
+  rol: 'PACIENTE' | 'PROFESIONAL' | 'CLINICA';
+}
+
+async function upsertSSOUser({ provider, providerAccountId, email, nombre, apellido, fotoUrl, rol }: SSOUserInput) {
+  // 1. Buscar por providerAccountId (prioridad - el email puede cambiar)
+  let user = await prisma.usuario.findFirst({
+    where: { providerAccountId },
+    include: { profesional: true, paciente: true, clinica: true },
+  });
+
+  let isNew = false;
+
+  // 2. Si no, buscar por email
+  if (!user) {
+    const existing = await prisma.usuario.findUnique({ where: { email } });
+    if (existing) {
+      // Email ya existe con otro provider
+      if (existing.provider && existing.provider !== 'local') {
+        // Vincular a la cuenta existente del mismo provider
+        if (existing.provider === provider) {
+          user = await prisma.usuario.findUnique({
+            where: { id: existing.id },
+            include: { profesional: true, paciente: true, clinica: true },
+          });
+        } else {
+          throw new AppError(409, 'EMAIL_EN_USO', `Este email está registrado con ${existing.provider}`);
+        }
+      } else if (existing.passwordHash) {
+        // Email existe con password - no permitir SSO
+        throw new AppError(409, 'EMAIL_EN_USO_CON_PASSWORD', 'Este email ya está registrado con contraseña');
+      }
+    }
+  }
+
+  // 3. Si no existe, crear usuario
+  if (!user) {
+    isNew = true;
+    user = await prisma.usuario.create({
+      data: {
+        email,
+        provider,
+        providerAccountId,
+        passwordHash: null,
+        rol,
+        // Para PROFESIONAL, NO creamos la tabla Profesional aún - se hace en completa-perfil
+        paciente: rol === 'PACIENTE' ? {
+          create: {
+            nombre,
+            apellido,
+            email,
+            genero: 'NO_ESPECIFICADO',
+            fotoUrl: fotoUrl || null,
+          },
+        } : undefined,
+      },
+      include: { profesional: true, paciente: true, clinica: true },
+    });
+  }
+
+  return { user, isNew };
+}
+
+// ── SSO Routes ──
+
+import { getGoogleAuthUrl, exchangeGoogleCode, getMicrosoftAuthUrl, exchangeMicrosoftCode } from '../services/sso.service';
+import crypto from 'crypto';
+
+// GET /api/auth/google?rol=PACIENTE|PROFESIONAL
+router.get('/google', (req, res) => {
+  const rol = String(req.query.rol || 'PACIENTE');
+  if (!['PACIENTE', 'PROFESIONAL', 'CLINICA'].includes(rol)) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
+  }
+
+  const state = Buffer.from(JSON.stringify({ rol, nonce: crypto.randomUUID() })).toString('base64');
+  const url = getGoogleAuthUrl(state);
+  res.redirect(url);
+});
+
+// GET /api/auth/google/callback?code=...&state=...
+router.get('/google/callback', asyncHandler(async (req, res) => {
+  const { code, error, state } = req.query as Record<string, string | undefined>;
+
+  if (error) {
+    return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${error}`);
+  }
+
+  if (!code || !state) {
+    throw new AppError(400, 'MISSING_PARAMS', 'Faltan parámetros OAuth');
+  }
+
+  try {
+    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { rol: string };
+    const rol = stateData.rol;
+    const googleUser = await exchangeGoogleCode(code);
+
+    const { user, isNew } = await upsertSSOUser({
+      provider: 'google',
+      providerAccountId: googleUser.sub,
+      email: googleUser.email,
+      nombre: googleUser.given_name || 'Usuario',
+      apellido: googleUser.family_name || 'SSO',
+      fotoUrl: googleUser.picture,
+      rol: rol as 'PACIENTE' | 'PROFESIONAL' | 'CLINICA',
+    });
+
+    const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
+    const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
+
+    res.redirect(`${process.env.FRONTEND_URL}${dest}?token=${token}&isNew=${isNew}`);
+  } catch (err: any) {
+    const errorCode = err.code || 'SSO_ERROR';
+    const errorMsg = err.message || 'Error en autenticación';
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${errorCode}&msg=${encodeURIComponent(errorMsg)}`);
+  }
+}));
+
+// GET /api/auth/microsoft?rol=PACIENTE|PROFESIONAL
+router.get('/microsoft', (req, res) => {
+  const rol = String(req.query.rol || 'PACIENTE');
+  if (!['PACIENTE', 'PROFESIONAL', 'CLINICA'].includes(rol)) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
+  }
+
+  const state = Buffer.from(JSON.stringify({ rol, nonce: crypto.randomUUID() })).toString('base64');
+  const url = getMicrosoftAuthUrl(state);
+  res.redirect(url);
+});
+
+// GET /api/auth/microsoft/callback?code=...&state=...
+router.get('/microsoft/callback', asyncHandler(async (req, res) => {
+  const { code, error, state } = req.query as Record<string, string | undefined>;
+
+  if (error) {
+    return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${error}`);
+  }
+
+  if (!code || !state) {
+    throw new AppError(400, 'MISSING_PARAMS', 'Faltan parámetros OAuth');
+  }
+
+  try {
+    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { rol: string };
+    const rol = stateData.rol;
+    const microsoftUser = await exchangeMicrosoftCode(code);
+
+    const { user, isNew } = await upsertSSOUser({
+      provider: 'microsoft',
+      providerAccountId: microsoftUser.sub,
+      email: microsoftUser.email,
+      nombre: microsoftUser.given_name || 'Usuario',
+      apellido: microsoftUser.family_name || 'SSO',
+      rol: rol as 'PACIENTE' | 'PROFESIONAL' | 'CLINICA',
+    });
+
+    const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
+    const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
+
+    res.redirect(`${process.env.FRONTEND_URL}${dest}?token=${token}&isNew=${isNew}`);
+  } catch (err: any) {
+    const errorCode = err.code || 'SSO_ERROR';
+    const errorMsg = err.message || 'Error en autenticación';
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${errorCode}&msg=${encodeURIComponent(errorMsg)}`);
+  }
 }));
 
 export { router as authRouter };

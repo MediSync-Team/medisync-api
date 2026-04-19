@@ -95,14 +95,16 @@ enum NivelRiesgoPreconsulta {
 // ==================== MODELOS ====================
 
 model Usuario {
-  id              String   @id @default(uuid())
-  email           String   @unique
-  passwordHash    String   @map("password_hash")
-  rol             Rol      @default(PACIENTE)
-  googleToken     String?  @map("google_token")
-  mpAccessToken   String?  @map("mp_access_token")
-  mpRefreshToken  String?  @map("mp_refresh_token")
-  mpVendedorId    String?  @map("mp_vendedor_id")
+  id                String   @id @default(uuid())
+  email             String   @unique
+  passwordHash      String?  @map("password_hash")
+  provider          String?  @map("provider")
+  providerAccountId String?  @map("provider_account_id")
+  rol               Rol      @default(PACIENTE)
+  googleToken       String?  @map("google_token")
+  mpAccessToken     String?  @map("mp_access_token")
+  mpRefreshToken    String?  @map("mp_refresh_token")
+  mpVendedorId      String?  @map("mp_vendedor_id")
   // Push notification preferences (granular per event type)
   pushTurno        Boolean  @default(true)  @map("push_turno")
   pushCancelacion  Boolean  @default(true)  @map("push_cancelacion")
