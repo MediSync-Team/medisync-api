@@ -77,11 +77,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per IP per 15 minutes (was 20)
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiados intentos. Intenta mas tarde.' } },
+  message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiados intentos fallidos. Intenta más tarde.' } },
+  skip: (req) => {
+    // Don't rate limit password reset requests
+    return req.path === '/api/auth/reset-password' || req.path === '/api/auth/verify-email';
+  },
 });
 
 app.get('/api/health', (req, res) => {

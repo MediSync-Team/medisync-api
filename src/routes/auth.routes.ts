@@ -127,6 +127,12 @@ router.post(
       include: { profesional: true, paciente: true },
     });
 
+    // Check if account is locked (even for nonexistent users to prevent enumeration)
+    if (user?.lockedUntil && user.lockedUntil > new Date()) {
+      const remainingMinutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+      throw new AppError(429, 'ACCOUNT_LOCKED', `Cuenta bloqueada. Intenta en ${remainingMinutes} minuto${remainingMinutes !== 1 ? 's' : ''}.`);
+    }
+
     if (!user) {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Credenciales inválidas');
     }
@@ -137,8 +143,37 @@ router.post(
 
     const validPassword = await bcrypt.compare(password, user.passwordHash);
     if (!validPassword) {
+      // Increment failed login attempts and lock if necessary
+      const newFailedAttempts = (user.failedLoginAttempts || 0) + 1;
+      const lockedUntil = newFailedAttempts >= 5
+        ? new Date(Date.now() + 15 * 60 * 1000) // Lock for 15 minutes
+        : null;
+
+      await prisma.usuario.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: newFailedAttempts,
+          lockedUntil,
+          lastFailedLoginAt: new Date(),
+        },
+      });
+
+      if (lockedUntil) {
+        throw new AppError(429, 'ACCOUNT_LOCKED', 'Demasiados intentos fallidos. Cuenta bloqueada por 15 minutos.');
+      }
+
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Credenciales inválidas');
     }
+
+    // Reset failed attempts on successful login
+    await prisma.usuario.update({
+      where: { id: user.id },
+      data: {
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        lastFailedLoginAt: null,
+      },
+    });
 
     const perfil = user.profesional || user.paciente;
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });

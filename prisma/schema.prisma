@@ -120,6 +120,12 @@ model Usuario {
   pushRecordatorio Boolean  @default(true)  @map("push_recordatorio")
   pushReceta       Boolean  @default(true)  @map("push_receta")
   pushChat         Boolean  @default(true)  @map("push_chat")
+
+  // Account lockout protection against brute force
+  failedLoginAttempts Int      @default(0) @map("failed_login_attempts")
+  lockedUntil        DateTime? @map("locked_until")
+  lastFailedLoginAt  DateTime? @map("last_failed_login_at")
+
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
