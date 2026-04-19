@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { getFileTypeFromPath } from '../utils/file-type-validator';
 
 const router = Router();
 
@@ -20,15 +21,24 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf'];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Tipo de archivo no permitido'));
-    }
-  },
 });
+
+// Allowed MIME types based on actual file content (magic bytes)
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'application/pdf',
+]);
+
+// Map file extensions to expected MIME types for additional validation
+const EXPECTED_MIME_BY_EXT: Record<string, string[]> = {
+  '.jpg': ['image/jpeg'],
+  '.jpeg': ['image/jpeg'],
+  '.png': ['image/png'],
+  '.gif': ['image/gif'],
+  '.pdf': ['application/pdf'],
+};
 
 async function assertTurnoArchivoAccess(turnoId: string, req: AuthRequest) {
   const turno = await prisma.turno.findUnique({
@@ -62,21 +72,55 @@ router.post(
       throw new AppError(400, 'NO_FILE', 'No se subió ningún archivo');
     }
 
-    const { turnoId } = req.params;
-    const { tipo = 'OTRO' } = req.body;
+    const filePath = path.join('./uploads', req.file.filename);
 
-    const archivo = await prisma.archivo.create({
-      data: {
-        turnoId,
-        tipo: tipo.toUpperCase(),
-        url: `/uploads/${req.file.filename}`,
-        nombreOriginal: req.file.originalname,
-        tamanoBytes: req.file.size,
-        mimeType: req.file.mimetype,
-      },
-    });
+    try {
+      // Validate actual file type using magic bytes, not client-provided MIME type
+      const fileType = await getFileTypeFromPath(filePath);
 
-    res.status(201).json(success(archivo));
+      if (!fileType) {
+        await fs.unlink(filePath); // Delete unrecognized file
+        throw new AppError(400, 'INVALID_FILE_TYPE', 'No se pudo identificar el tipo de archivo');
+      }
+
+      // Check if detected MIME type is in allowed list
+      if (!ALLOWED_MIME_TYPES.has(fileType.mime)) {
+        await fs.unlink(filePath); // Delete disallowed file
+        throw new AppError(400, 'FILE_TYPE_NOT_ALLOWED', `Tipo de archivo no permitido: ${fileType.mime}`);
+      }
+
+      // Additional validation: check extension matches detected type
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const expectedMimes = EXPECTED_MIME_BY_EXT[ext];
+      if (ext && expectedMimes && !expectedMimes.includes(fileType.mime)) {
+        await fs.unlink(filePath); // Delete mismatched file
+        throw new AppError(400, 'FILE_EXTENSION_MISMATCH', 'La extensión del archivo no coincide con su contenido');
+      }
+
+      const { turnoId } = req.params;
+      const { tipo = 'OTRO' } = req.body;
+
+      const archivo = await prisma.archivo.create({
+        data: {
+          turnoId,
+          tipo: tipo.toUpperCase(),
+          url: `/uploads/${req.file.filename}`,
+          nombreOriginal: req.file.originalname,
+          tamanoBytes: req.file.size,
+          mimeType: fileType.mime, // Use detected MIME type, not client-provided
+        },
+      });
+
+      res.status(201).json(success(archivo));
+    } catch (err) {
+      // Ensure file is deleted if validation fails
+      try {
+        await fs.unlink(filePath);
+      } catch {
+        // File might already be deleted or not exist
+      }
+      throw err;
+    }
   })
 );
 
