@@ -97,7 +97,14 @@ router.post(
       meta: { nombre: displayName, rol },
     }).catch((err) => console.error('[auth] welcome email error:', err));
 
-    res.status(201).json(success({ token, user: { id: user.id, email: user.email, rol: user.rol } }));
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+    res.status(201).json(success({ user: { id: user.id, email: user.email, rol: user.rol } }));
   })
 );
 
@@ -136,7 +143,14 @@ router.post(
     const perfil = user.profesional || user.paciente;
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
 
-    res.json(success({ token, user: { id: user.id, email: user.email, rol: user.rol, perfil } }));
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+    res.json(success({ user: { id: user.id, email: user.email, rol: user.rol, perfil } }));
   })
 );
 
@@ -157,6 +171,11 @@ router.get('/me', authMiddleware(), asyncHandler(async (req: AuthRequest, res) =
 
   res.json(success(user));
 }));
+
+router.post('/logout', (req, res) => {
+  res.clearCookie('token', { path: '/' });
+  res.json(success({ logged_out: true }));
+});
 
 // ── SSO Code Exchange Store ──
 // Short-lived single-use codes so the JWT never appears in the redirect URL.
@@ -200,7 +219,14 @@ router.post('/exchange-code', asyncHandler(async (req, res) => {
   }
 
   ssoPendingCodes.delete(code); // single-use
-  res.json(success({ token: entry.token, dest: entry.dest }));
+  res.cookie('token', entry.token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: '/',
+  });
+  res.json(success({ dest: entry.dest }));
 }));
 
 // ── SSO Helper ──
@@ -322,6 +348,13 @@ router.get('/google/callback', asyncHandler(async (req, res) => {
     const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
     const ssoCode = createSSOCode(token, dest);
 
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
     res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
   } catch (err: any) {
     const errorCode = err.code || 'SSO_ERROR';
@@ -372,6 +405,13 @@ router.get('/microsoft/callback', asyncHandler(async (req, res) => {
     const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
     const ssoCode = createSSOCode(token, dest);
 
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
     res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
   } catch (err: any) {
     const errorCode = err.code || 'SSO_ERROR';
