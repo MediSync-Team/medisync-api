@@ -233,6 +233,85 @@ router.put('/:id/historia-clinica', authMiddleware('PROFESIONAL'), asyncHandler(
   res.json(success(updated));
 }));
 
+router.get('/mis-recetas', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+
+  const turnos = await prisma.turno.findMany({
+    where: {
+      pacienteId: paciente.id,
+      recetaIndicacion: { isNot: null },
+    },
+    include: {
+      recetaIndicacion: true,
+      profesional: { include: { especialidad: true } },
+    },
+    orderBy: { fechaHora: 'desc' },
+  });
+
+  const recetas = turnos.map((turno) => ({
+    turnoId: turno.id,
+    fechaHora: turno.fechaHora.toISOString(),
+    profesional: {
+      nombre: turno.profesional.nombre,
+      apellido: turno.profesional.apellido,
+      especialidad: turno.profesional.especialidad.nombre,
+      fotoUrl: turno.profesional.fotoUrl,
+    },
+    receta: {
+      diagnostico: turno.recetaIndicacion!.diagnostico,
+      medicamentos: turno.recetaIndicacion!.medicamentos,
+      indicaciones: turno.recetaIndicacion!.indicaciones,
+      planTratamiento: turno.recetaIndicacion!.planTratamiento,
+      estudiosSolicitados: turno.recetaIndicacion!.estudiosSolicitados,
+      proximoControl: turno.recetaIndicacion!.proximoControl ? new Date(turno.recetaIndicacion!.proximoControl).toISOString() : null,
+      advertencias: turno.recetaIndicacion!.advertencias,
+      observaciones: turno.recetaIndicacion!.observaciones,
+      emitidaAt: turno.recetaIndicacion!.emitidaAt.toISOString(),
+    },
+  }));
+
+  res.json(success({ recetas }));
+}));
+
+router.get('/mis-certificados', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
+  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+
+  const turnos = await prisma.turno.findMany({
+    where: {
+      pacienteId: paciente.id,
+      certificado: { isNot: null },
+    },
+    include: {
+      certificado: true,
+      profesional: { include: { especialidad: true } },
+    },
+    orderBy: { fechaHora: 'desc' },
+  });
+
+  const certificados = turnos.map((turno) => ({
+    turnoId: turno.id,
+    fechaHora: turno.fechaHora.toISOString(),
+    profesional: {
+      nombre: turno.profesional.nombre,
+      apellido: turno.profesional.apellido,
+    },
+    certificado: {
+      id: turno.certificado!.id,
+      tipo: turno.certificado!.tipo,
+      diagnostico: turno.certificado!.diagnostico,
+      texto: turno.certificado!.texto,
+      diasReposo: turno.certificado!.diasReposo,
+      turnoId: turno.certificado!.turnoId,
+      emitidaAt: turno.certificado!.emitidaAt.toISOString(),
+      createdAt: turno.certificado!.createdAt.toISOString(),
+    },
+  }));
+
+  res.json(success({ certificados }));
+}));
+
 router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
   const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
   if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');

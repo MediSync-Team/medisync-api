@@ -266,15 +266,28 @@ router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(a
     throw new AppError(400, 'VALIDATION_ERROR', 'Rango horario invalido');
   }
 
-  const disponibilidad = await prisma.disponibilidad.create({
-    data: {
-      profesionalId: req.params.id,
-      diaSemana,
-      horaInicio,
-      horaFin,
-      modalidad: modalidad || 'PRESENCIAL',
-      lugarAtencion: lugarAtencion?.trim() || null,
-    },
+  const disponibilidad = await prisma.$transaction(async (tx) => {
+    const disp = await tx.disponibilidad.create({
+      data: {
+        profesionalId: req.params.id,
+        diaSemana,
+        horaInicio,
+        horaFin,
+        modalidad: modalidad || 'PRESENCIAL',
+        lugarAtencion: lugarAtencion?.trim() || null,
+      },
+    });
+
+    await tx.auditoriaDisponibilidad.create({
+      data: {
+        profesionalId: req.params.id,
+        tipoEvento: 'DISPONIBILIDAD_CREADA',
+        disponibilidadId: disp.id,
+        detalle: { diaSemana, horaInicio, horaFin, modalidad: modalidad || 'PRESENCIAL', lugarAtencion: lugarAtencion?.trim() || null },
+      },
+    });
+
+    return disp;
   });
 
   res.status(201).json(success(disponibilidad));
@@ -295,15 +308,49 @@ router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyn
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para eliminar esta disponibilidad');
   }
 
-  const deleted = await prisma.disponibilidad.deleteMany({
-    where: { id: req.params.dispId, profesionalId: req.params.id },
-  });
-
-  if (deleted.count === 0) {
+  const existing = await prisma.disponibilidad.findUnique({ where: { id: req.params.dispId } });
+  if (!existing || existing.profesionalId !== req.params.id) {
     throw new AppError(404, 'NOT_FOUND', 'Disponibilidad no encontrada');
   }
 
+  await prisma.$transaction([
+    prisma.disponibilidad.deleteMany({
+      where: { id: req.params.dispId, profesionalId: req.params.id },
+    }),
+    prisma.auditoriaDisponibilidad.create({
+      data: {
+        profesionalId: req.params.id,
+        tipoEvento: 'DISPONIBILIDAD_ELIMINADA',
+        disponibilidadId: req.params.dispId,
+        detalle: { diaSemana: existing.diaSemana, horaInicio: existing.horaInicio, horaFin: existing.horaFin, modalidad: existing.modalidad },
+      },
+    }),
+  ]);
+
   res.json(success({ deleted: true }));
+}));
+
+router.get('/:id/auditoria', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
+  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos');
+  }
+
+  const page  = Math.max(1, Number(req.query.page)  || 1);
+  const limit = Math.min(50, Number(req.query.limit) || 20);
+  const skip  = (page - 1) * limit;
+
+  const where: any = { profesionalId: req.params.id };
+  if (req.query.tipoEvento) where.tipoEvento = req.query.tipoEvento;
+  if (req.query.desde) where.creadoAt = { ...where.creadoAt, gte: new Date(String(req.query.desde)) };
+  if (req.query.hasta) where.creadoAt = { ...where.creadoAt, lte: new Date(String(req.query.hasta)) };
+
+  const [items, total] = await Promise.all([
+    prisma.auditoriaDisponibilidad.findMany({ where, orderBy: { creadoAt: 'desc' }, skip, take: limit }),
+    prisma.auditoriaDisponibilidad.count({ where }),
+  ]);
+
+  res.json(success({ data: items, meta: { total, page, limit } }));
 }));
 
 router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {

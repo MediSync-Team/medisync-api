@@ -92,6 +92,15 @@ enum NivelRiesgoPreconsulta {
   URGENTE
 }
 
+enum TipoEventoAuditoria {
+  DISPONIBILIDAD_CREADA
+  DISPONIBILIDAD_ELIMINADA
+  BLOQUEO_CREADO
+  BLOQUEO_ELIMINADO
+  TURNO_CANCELADO_POR_BLOQUEO
+  TURNO_CANCELADO_POR_PROFESIONAL
+}
+
 // ==================== MODELOS ====================
 
 model Usuario {
@@ -202,6 +211,7 @@ model Profesional {
   resenas          Resena[]
   bloqueos         BloqueoDisponibilidad[]
   cupones          Cupon[]
+  auditoria        AuditoriaDisponibilidad[]
 
   @@map("profesional")
 }
@@ -424,6 +434,23 @@ model BloqueoDisponibilidad {
 
   @@index([profesionalId, fechaInicio, fechaFin])
   @@map("bloqueo_disponibilidad")
+}
+
+model AuditoriaDisponibilidad {
+  id               String               @id @default(uuid())
+  profesionalId    String               @map("profesional_id")
+  tipoEvento       TipoEventoAuditoria  @map("tipo_evento")
+  disponibilidadId String?              @map("disponibilidad_id")
+  bloqueoId        String?              @map("bloqueo_id")
+  turnoId          String?              @map("turno_id")
+  detalle          Json?
+  creadoAt         DateTime             @default(now()) @map("creado_at")
+
+  profesional      Profesional          @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+
+  @@index([profesionalId, creadoAt])
+  @@index([turnoId])
+  @@map("auditoria_disponibilidad")
 }
 
 model Resena {

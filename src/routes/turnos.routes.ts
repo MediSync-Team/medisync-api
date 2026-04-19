@@ -736,6 +736,17 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
       modalidad: turnoActualizado.modalidad as 'PRESENCIAL' | 'VIRTUAL',
       turnoId: turnoActualizado.id,
     });
+
+    if (isProfesionalOwner) {
+      await prisma.auditoriaDisponibilidad.create({
+        data: {
+          profesionalId: turnoActualizado.profesionalId,
+          tipoEvento: 'TURNO_CANCELADO_POR_PROFESIONAL',
+          turnoId: turnoActualizado.id,
+          detalle: { fechaHora: turnoActualizado.fechaHora.toISOString(), notasCancelacion, pacienteId: turnoActualizado.pacienteId },
+        },
+      }).catch(() => {});
+    }
   }
 
   if (estado === 'CONFIRMADO' && turnoActualizado.paciente) {
@@ -1106,6 +1117,24 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
 
   const ticket = issueVideoTicket(turno.id, req.user!.userId);
   res.json(success({ ticket, roomId: turno.id }));
+}));
+
+router.get('/:id/auditoria-cancelacion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const { turno } = await assertTurnoAccess(req.params.id, req);
+
+  if (turno.estado !== 'CANCELADO') {
+    res.json(success(null));
+    return;
+  }
+
+  const auditoria = await prisma.auditoriaDisponibilidad.findFirst({
+    where: {
+      turnoId: req.params.id,
+      tipoEvento: { in: ['TURNO_CANCELADO_POR_BLOQUEO', 'TURNO_CANCELADO_POR_PROFESIONAL'] },
+    },
+  });
+
+  res.json(success(auditoria || null));
 }));
 
 export { router as turnosRouter };
