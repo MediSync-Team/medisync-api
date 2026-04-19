@@ -33,14 +33,21 @@ type AllowedRol = 'PROFESIONAL' | 'PACIENTE' | 'ADMIN' | 'CLINICA';
 
 export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
+    // Try to get token from header first, then from cookie
+    let token: string | undefined;
     const authHeader = req.headers.authorization;
 
-    if (!authHeader?.startsWith('Bearer ')) {
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.cookies?.token) {
+      token = req.cookies.token;
+    }
+
+    if (!token) {
       return res.status(401).json(error('UNAUTHORIZED', 'Token requerido'));
     }
 
     try {
-      const token = authHeader.split(' ')[1];
       const payload = verifyToken(token);
       req.user = payload;
 
