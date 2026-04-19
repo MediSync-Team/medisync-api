@@ -35,6 +35,12 @@ export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     // TEMPORARY: Auth disabled for debugging
     // TODO: Re-enable after fixing cookie/token issues
+    // Set dummy user to allow code to access req.user.userId
+    req.user = {
+      userId: 'temp-user-id',
+      email: 'temp@example.com',
+      rol: 'PACIENTE',
+    };
     next();
     return;
 
