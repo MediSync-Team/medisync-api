@@ -104,7 +104,7 @@ router.post(
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     });
-    res.status(201).json(success({ user: { id: user.id, email: user.email, rol: user.rol } }));
+    res.status(201).json(success({ token, user: { id: user.id, email: user.email, rol: user.rol } }));
   })
 );
 
@@ -185,7 +185,7 @@ router.post(
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     });
-    res.json(success({ user: { id: user.id, email: user.email, rol: user.rol, perfil } }));
+    res.json(success({ token, user: { id: user.id, email: user.email, rol: user.rol, perfil } }));
   })
 );
 

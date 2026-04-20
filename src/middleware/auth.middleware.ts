@@ -33,8 +33,6 @@ type AllowedRol = 'PROFESIONAL' | 'PACIENTE' | 'ADMIN' | 'CLINICA';
 
 export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
-    // TEMPORARY: Auth disabled to allow login testing
-    // Try to verify token if present, but don't reject if missing
     let token: string | undefined;
     const authHeader = req.headers.authorization;
 
@@ -44,36 +42,24 @@ export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
       token = req.cookies.token;
     }
 
-    if (token) {
-      try {
-        const payload = verifyToken(token);
-        req.user = payload;
-
-        if (requiredRol) {
-          const allowed = Array.isArray(requiredRol) ? requiredRol : [requiredRol];
-          if (!allowed.includes(payload.rol as AllowedRol)) {
-            return res.status(403).json(error('FORBIDDEN', 'Sin permisos'));
-          }
-        }
-      } catch {
-        // Invalid token, but allow request to proceed for now
-        console.warn('[auth] invalid token, proceeding without auth');
-        req.user = {
-          userId: 'temp-debug-user',
-          email: 'debug@test.com',
-          rol: 'PACIENTE',
-        };
-      }
-    } else {
-      // No token provided, set dummy user
-      req.user = {
-        userId: 'temp-debug-user',
-        email: 'debug@test.com',
-        rol: 'PACIENTE',
-      };
+    if (!token) {
+      return res.status(401).json(error('UNAUTHORIZED', 'Token requerido'));
     }
 
-    // Allow all requests regardless of token status
-    next();
+    try {
+      const payload = verifyToken(token);
+      req.user = payload;
+
+      if (requiredRol) {
+        const allowed = Array.isArray(requiredRol) ? requiredRol : [requiredRol];
+        if (!allowed.includes(payload.rol as AllowedRol)) {
+          return res.status(403).json(error('FORBIDDEN', 'Sin permisos'));
+        }
+      }
+
+      next();
+    } catch {
+      return res.status(401).json(error('INVALID_TOKEN', 'Token inválido'));
+    }
   };
 }
