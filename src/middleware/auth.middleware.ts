@@ -33,19 +33,6 @@ type AllowedRol = 'PROFESIONAL' | 'PACIENTE' | 'ADMIN' | 'CLINICA';
 
 export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
-    // TEMPORARY: Auth disabled for debugging
-    // TODO: Re-enable after fixing cookie/token issues
-    // Set dummy user to allow code to access req.user.userId
-    req.user = {
-      userId: 'temp-user-id',
-      email: 'temp@example.com',
-      rol: 'PACIENTE',
-    };
-    next();
-    return;
-
-    // Original implementation below (commented out temporarily)
-    /*
     // Try to get token from header first, then from cookie
     let token: string | undefined;
     const authHeader = req.headers.authorization;
@@ -75,6 +62,5 @@ export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
     } catch {
       return res.status(401).json(error('INVALID_TOKEN', 'Token inválido'));
     }
-    */
   };
 }
