@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import http from 'http';
 import express from 'express';
-import cors from 'cors';
+import cors, { type CorsOptions } from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
@@ -66,14 +66,8 @@ if (!fs.existsSync('./uploads')) {
 app.set('trust proxy', 1);
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-}));
 
-app.use(cors({
+const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
     if (!origin) {
       callback(null, true);
@@ -103,6 +97,17 @@ app.use(cors({
     callback(new Error('CORS no permitido'));
   },
   credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS',
 }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50kb' })); // Prevent memory exhaustion; larger payloads rejected with 413
@@ -116,6 +121,9 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiados intentos fallidos. Intenta más tarde.' } },
   skip: (req) => {
+    if (req.method === 'OPTIONS') {
+      return true;
+    }
     // Don't rate limit registration, password reset, or email verification
     return ['/api/auth/register', '/api/auth/reset-password', '/api/auth/verify-email'].includes(req.path);
   },
