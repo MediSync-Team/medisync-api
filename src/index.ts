@@ -36,10 +36,28 @@ import { expireStaleWaitlistNotifications } from './services/waitlist.service';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
+
+const normalizeOrigin = (value: string): string | null => {
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    return url.origin;
+  } catch {
+    return null;
+  }
+};
+
+const envOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
   .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+  .map((origin) => normalizeOrigin(origin))
+  .filter((origin): origin is string => Boolean(origin));
+
+const devOrigins = process.env.NODE_ENV === 'development'
+  ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+  : [];
+
+const allowedOrigins = new Set([...envOrigins, ...devOrigins]);
 
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
@@ -62,11 +80,26 @@ app.use(cors({
       return;
     }
 
-    if (allowedOrigins.includes(origin)) {
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (normalizedOrigin && allowedOrigins.has(normalizedOrigin)) {
       callback(null, true);
       return;
     }
 
+    if (process.env.NODE_ENV === 'development' && normalizedOrigin) {
+      try {
+        const url = new URL(normalizedOrigin);
+        const isLocalHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+        if (isLocalHost) {
+          callback(null, true);
+          return;
+        }
+      } catch {
+        // Keep default rejection path
+      }
+    }
+
+    console.warn(`[CORS] Origin rechazado: ${origin}. Permitidos: ${Array.from(allowedOrigins).join(', ')}`);
     callback(new Error('CORS no permitido'));
   },
   credentials: true,
