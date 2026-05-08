@@ -7,8 +7,6 @@ import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
-const mp = require('mercadopago');
-
 interface MercadoPagoPreferenceResponse {
   id: string;
   init_point: string;
