@@ -346,7 +346,7 @@ async function upsertSSOUser({ provider, providerAccountId, email, nombre, apell
 
 // ── SSO Routes ──
 
-import { getGoogleAuthUrl, exchangeGoogleCode, getMicrosoftAuthUrl, exchangeMicrosoftCode } from '../services/sso.service';
+import { getGoogleAuthUrl, exchangeGoogleCode } from '../services/sso.service';
 import crypto from 'crypto';
 
 // GET /api/auth/google?rol=PACIENTE|PROFESIONAL
@@ -412,90 +412,6 @@ router.get('/google/callback', asyncHandler(async (req, res) => {
       nombre: googleUser.given_name || 'Usuario',
       apellido: googleUser.family_name || 'SSO',
       fotoUrl: googleUser.picture,
-      rol: rol as 'PACIENTE' | 'PROFESIONAL' | 'CLINICA',
-    });
-
-    const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
-    const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
-    const ssoCode = createSSOCode(token, dest);
-
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
-    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
-  } catch (err: any) {
-    const errorCode = err.code || 'SSO_ERROR';
-    const errorMsg = err.message || 'Error en autenticación';
-    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${errorCode}&msg=${encodeURIComponent(errorMsg)}`);
-  }
-}));
-
-// GET /api/auth/microsoft?rol=PACIENTE|PROFESIONAL
-router.get('/microsoft', (req, res) => {
-  const rol = String(req.query.rol || 'PACIENTE');
-  if (!['PACIENTE', 'PROFESIONAL', 'CLINICA'].includes(rol)) {
-    return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
-  }
-
-  const nonce = crypto.randomUUID();
-  oauthNonces.set(nonce, { rol, expiresAt: Date.now() + 10 * 60 * 1000 }); // 10 min TTL
-  res.cookie('oauth_nonce', nonce, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 10 * 60 * 1000,
-    path: '/',
-  });
-
-  const state = Buffer.from(JSON.stringify({ nonce })).toString('base64');
-  const url = getMicrosoftAuthUrl(state);
-  res.redirect(url);
-});
-
-// GET /api/auth/microsoft/callback?code=...&state=...
-router.get('/microsoft/callback', asyncHandler(async (req, res) => {
-  const { code, error, state } = req.query as Record<string, string | undefined>;
-  const cookieNonce = req.cookies?.oauth_nonce;
-
-  if (error) {
-    return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${error}`);
-  }
-
-  if (!code || !state) {
-    throw new AppError(400, 'MISSING_PARAMS', 'Faltan parámetros OAuth');
-  }
-
-  try {
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString()) as { nonce: string };
-    const nonce = stateData.nonce;
-
-    // Verify nonce matches cookie and is in the map (CSRF protection)
-    if (!cookieNonce || !nonce || cookieNonce !== nonce) {
-      throw new AppError(400, 'INVALID_NONCE', 'Nonce no válido o expirado');
-    }
-
-    const nonceData = oauthNonces.get(nonce);
-    if (!nonceData || Date.now() > nonceData.expiresAt) {
-      oauthNonces.delete(nonce);
-      throw new AppError(400, 'EXPIRED_NONCE', 'Nonce expirado');
-    }
-
-    const rol = nonceData.rol;
-    oauthNonces.delete(nonce); // single-use
-    res.clearCookie('oauth_nonce', { path: '/' });
-
-    const microsoftUser = await exchangeMicrosoftCode(code);
-
-    const { user, isNew } = await upsertSSOUser({
-      provider: 'microsoft',
-      providerAccountId: microsoftUser.sub,
-      email: microsoftUser.email,
-      nombre: microsoftUser.given_name || 'Usuario',
-      apellido: microsoftUser.family_name || 'SSO',
       rol: rol as 'PACIENTE' | 'PROFESIONAL' | 'CLINICA',
     });
 
