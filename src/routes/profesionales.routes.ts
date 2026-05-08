@@ -266,6 +266,26 @@ router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(a
     throw new AppError(400, 'VALIDATION_ERROR', 'Rango horario invalido');
   }
 
+  const existingDisp = await prisma.disponibilidad.findMany({
+    where: { profesionalId: req.params.id, diaSemana, activo: true },
+  });
+
+  function seSuperponen(h1: string, h2: string, h3: string, h4: string): boolean {
+    return h1 < h4 && h2 > h3;
+  }
+
+  for (const existente of existingDisp) {
+    if (seSuperponen(horaInicio, horaFin, existente.horaInicio, existente.horaFin)) {
+      throw new AppError(
+        409,
+        'HORARIO_SUPERPUESTO',
+        `El horario se superpone con un horario existente del día ${['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][diaSemana]} (${existente.horaInicio} - ${existente.horaFin}, ${existente.modalidad})`
+      );
+    }
+  }
+
+  const modalidadNueva = modalidad || 'PRESENCIAL';
+
   const disponibilidad = await prisma.$transaction(async (tx) => {
     const disp = await tx.disponibilidad.create({
       data: {
@@ -273,7 +293,7 @@ router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(a
         diaSemana,
         horaInicio,
         horaFin,
-        modalidad: modalidad || 'PRESENCIAL',
+        modalidad: modalidadNueva,
         lugarAtencion: lugarAtencion?.trim() || null,
       },
     });
