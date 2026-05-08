@@ -550,6 +550,19 @@ model CertificadoMedico {
   @@map("certificado_medico")
 }
 
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  usado     Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([email])
+  @@map("password_reset_token")
+}
+
 model BookingVerification {
   id                String   @id @default(uuid())
   token             String   @unique

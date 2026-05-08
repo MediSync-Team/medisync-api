@@ -212,6 +212,90 @@ router.post('/logout', (req, res) => {
   res.json(success({ logged_out: true }));
 });
 
+// ── Password Reset ──
+
+router.post(
+  '/forgot-password',
+  [body('email').isEmail().normalizeEmail()],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Email inválido');
+    }
+
+    const { email } = req.body;
+    const user = await prisma.usuario.findUnique({ where: { email } });
+
+    // Always return success to prevent email enumeration
+    if (!user) {
+      res.json(success({ message: 'Si el email está registrado, recibirás un enlace de recuperación.' }));
+      return;
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+
+    await prisma.passwordResetToken.create({
+      data: {
+        email,
+        token,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+
+    const baseUrl = (process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    const resetUrl = `${baseUrl}/forgot-password?token=${token}`;
+
+    console.log(`[auth] Reset link for ${email}: ${resetUrl}`);
+
+    sendNotification(['EMAIL'], {
+      event: 'RECUPERAR_CONTRASENA',
+      title: 'Recuperá tu contraseña',
+      message: 'Hacé clic en el botón de abajo para restablecer tu contraseña. El enlace expira en 1 hora.',
+      userEmail: email,
+      meta: { resetUrl },
+    }).catch((err) => console.error('[auth] reset email error:', err));
+
+    res.json(success({ message: 'Si el email está registrado, recibirás un enlace de recuperación.' }));
+  })
+);
+
+router.post(
+  '/reset-password',
+  [
+    body('token').notEmpty(),
+    body('newPassword').isLength({ min: 8 }),
+  ],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Token o contraseña inválidos');
+    }
+
+    const { token, newPassword } = req.body;
+
+    const resetToken = await prisma.passwordResetToken.findUnique({ where: { token } });
+
+    if (!resetToken || resetToken.usado || resetToken.expiresAt < new Date()) {
+      throw new AppError(400, 'INVALID_TOKEN', 'El enlace de recuperación es inválido o expiró');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await prisma.$transaction([
+      prisma.usuario.update({
+        where: { email: resetToken.email },
+        data: { passwordHash, failedLoginAttempts: 0, lockedUntil: null },
+      }),
+      prisma.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { usado: true },
+      }),
+    ]);
+
+    res.json(success({ message: 'Contraseña restablecida correctamente' }));
+  })
+);
+
 // ── SSO Code Exchange Store ──
 // Short-lived single-use codes so the JWT never appears in the redirect URL.
 
