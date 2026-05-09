@@ -145,7 +145,7 @@ router.post(
     if (!validPassword) {
       // Increment failed login attempts and lock if necessary
       const newFailedAttempts = (user.failedLoginAttempts || 0) + 1;
-      const lockedUntil = newFailedAttempts >= 5
+      const lockedUntil = newFailedAttempts >= 10
         ? new Date(Date.now() + 15 * 60 * 1000) // Lock for 15 minutes
         : null;
 
