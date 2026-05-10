@@ -85,7 +85,7 @@ router.post(
           auto_recurring: {
             frequency: 1,
             frequency_type: 'months',
-            transaction_amount: 4990,
+            transaction_amount: 20000,
             currency_id: 'ARS',
           },
           back_url: `${process.env.FRONTEND_URL}/dashboard`,
