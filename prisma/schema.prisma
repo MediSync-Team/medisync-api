@@ -294,6 +294,7 @@ model Turno {
   preconsultaResumen  String?     @map("preconsulta_resumen")
   preconsultaCompletadaAt DateTime? @map("preconsulta_completada_at")
   linkVideollamada    String?     @map("link_videollamada")
+  lugarAtencion       String?     @map("lugar_atencion")
   notasCancelacion    String?     @map("notas_cancelacion")
   googleEventId          String?     @map("google_event_id")
   googleEventIdPaciente  String?     @map("google_event_id_paciente")

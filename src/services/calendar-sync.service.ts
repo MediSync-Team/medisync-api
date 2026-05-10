@@ -64,10 +64,10 @@ export async function syncTurnoCreated(turnoId: string): Promise<void> {
       {
         turnoId,
         title:       buildTitle(pacNombre, turno.profesional.especialidad.nombre, turno.modalidad),
-        description: buildDescription(pacNombre, turno.modalidad, turno.linkVideollamada, turno.profesional.lugarAtencion),
+        description: buildDescription(pacNombre, turno.modalidad, turno.linkVideollamada, turno.lugarAtencion ?? turno.profesional.lugarAtencion),
         startIso:    turno.fechaHora.toISOString(),
         endIso:      endAt.toISOString(),
-        location:    turno.profesional.lugarAtencion ?? undefined,
+        location:    turno.lugarAtencion ?? turno.profesional.lugarAtencion ?? undefined,
         attendeeEmail: turno.paciente?.email ?? undefined,
       },
     );
@@ -109,10 +109,10 @@ export async function syncTurnoRescheduled(turnoId: string): Promise<void> {
       turno.googleEventId,
       {
         title:       buildTitle(pacNombre, turno.profesional.especialidad.nombre, turno.modalidad),
-        description: buildDescription(pacNombre, turno.modalidad, turno.linkVideollamada, turno.profesional.lugarAtencion),
+        description: buildDescription(pacNombre, turno.modalidad, turno.linkVideollamada, turno.lugarAtencion ?? turno.profesional.lugarAtencion),
         startIso:    turno.fechaHora.toISOString(),
         endIso:      endAt.toISOString(),
-        location:    turno.profesional.lugarAtencion ?? undefined,
+        location:    turno.lugarAtencion ?? turno.profesional.lugarAtencion ?? undefined,
       },
     );
   } catch (err) {
@@ -183,10 +183,10 @@ export async function syncTurnoCreatedForPaciente(turnoId: string): Promise<void
     const eventId = await createCalendarEvent(turno.paciente.usuario.googleToken, {
       turnoId,
       title:        buildPacienteTitle(profNombre, turno.profesional.especialidad.nombre, turno.modalidad),
-      description:  buildPacienteDescription(profNombre, turno.profesional.especialidad.nombre, turno.modalidad, turno.linkVideollamada, turno.profesional.lugarAtencion),
+      description:  buildPacienteDescription(profNombre, turno.profesional.especialidad.nombre, turno.modalidad, turno.linkVideollamada, turno.lugarAtencion ?? turno.profesional.lugarAtencion),
       startIso:     turno.fechaHora.toISOString(),
       endIso:       endAt.toISOString(),
-      location:     turno.modalidad === 'PRESENCIAL' ? (turno.profesional.lugarAtencion ?? undefined) : undefined,
+      location:     turno.modalidad === 'PRESENCIAL' ? (turno.lugarAtencion ?? turno.profesional.lugarAtencion ?? undefined) : undefined,
     });
 
     // Store in a dedicated column to avoid collision with the profesional's event id
@@ -222,10 +222,10 @@ export async function syncTurnoRescheduledForPaciente(turnoId: string): Promise<
 
     await updateCalendarEvent(turno.paciente.usuario.googleToken, turno.googleEventIdPaciente, {
       title:        buildPacienteTitle(profNombre, turno.profesional.especialidad.nombre, turno.modalidad),
-      description:  buildPacienteDescription(profNombre, turno.profesional.especialidad.nombre, turno.modalidad, turno.linkVideollamada, turno.profesional.lugarAtencion),
+      description:  buildPacienteDescription(profNombre, turno.profesional.especialidad.nombre, turno.modalidad, turno.linkVideollamada, turno.lugarAtencion ?? turno.profesional.lugarAtencion),
       startIso:     turno.fechaHora.toISOString(),
       endIso:       endAt.toISOString(),
-      location:     turno.modalidad === 'PRESENCIAL' ? (turno.profesional.lugarAtencion ?? undefined) : undefined,
+      location:     turno.modalidad === 'PRESENCIAL' ? (turno.lugarAtencion ?? turno.profesional.lugarAtencion ?? undefined) : undefined,
     });
   } catch (err) {
     console.error('[CalendarSync] syncTurnoRescheduledForPaciente failed:', err);

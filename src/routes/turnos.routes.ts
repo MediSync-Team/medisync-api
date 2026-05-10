@@ -384,6 +384,15 @@ router.post(
         ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
         : null;
 
+    // Resolve location from the matching Disponibilidad slot, fall back to profile default
+    const diaSemanaBooking = fechaHoraDate.getDay();
+    const horaBookingStr = `${String(fechaHoraDate.getHours()).padStart(2, '0')}:${String(fechaHoraDate.getMinutes()).padStart(2, '0')}`;
+    const dispSlots = await prisma.disponibilidad.findMany({
+      where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
+    });
+    const matchingDisp = dispSlots.find(d => horaBookingStr >= d.horaInicio && horaBookingStr < d.horaFin);
+    const lugarAtencionTurno = matchingDisp?.lugarAtencion ?? profesional.lugarAtencion ?? null;
+
       const result = await prisma.$transaction(async (tx) => {
       const existingStart = fechaHoraDate.getTime();
       const existingEnd = existingStart + 30 * 60 * 1000; // 30 min slots
@@ -410,6 +419,7 @@ router.post(
           fechaHora: fechaHoraDate,
           modalidad,
           linkVideollamada,
+          lugarAtencion: lugarAtencionTurno,
           estado: 'RESERVADO',
         },
       });
@@ -452,7 +462,7 @@ router.post(
               fechaHora: turnoConRelaciones.fechaHora.toISOString(),
               profesional: `Dr/a. ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido}`,
               modalidad: turnoConRelaciones.modalidad,
-              lugarAtencion: turnoConRelaciones.profesional.lugarAtencion ?? undefined,
+              lugarAtencion: turnoConRelaciones.lugarAtencion ?? turnoConRelaciones.profesional.lugarAtencion ?? undefined,
               linkVideollamada: turnoConRelaciones.linkVideollamada ?? undefined,
             },
           });
@@ -557,15 +567,20 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     },
   });
 
-  const slotValido = disponibilidades.some((disp) => {
+  let matchingDispRep = disponibilidades.find((disp) => {
     const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidadFinal;
     const horarioOk = horaStr >= disp.horaInicio && horaStr < disp.horaFin;
     return modalidadOk && horarioOk;
   });
 
+  const slotValido = !!matchingDispRep;
+
   if (!slotValido) {
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
   }
+
+  const profReprog = await prisma.profesional.findUnique({ where: { id: turno.profesionalId }, select: { lugarAtencion: true } });
+  const nuevaLugarAtencion = matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null;
 
   const turnoActualizado = await prisma.$transaction(async (tx) => {
     const conflicto = await tx.turno.findFirst({
@@ -586,6 +601,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
       data: {
         fechaHora: nuevaFechaHora,
         modalidad: modalidadFinal,
+        lugarAtencion: nuevaLugarAtencion,
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },
       include: {
@@ -617,7 +633,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
         fechaHora: turnoActualizado.fechaHora.toISOString(),
         profesional: `Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido}`,
         modalidad: turnoActualizado.modalidad,
-        lugarAtencion: turnoActualizado.profesional.lugarAtencion ?? undefined,
+        lugarAtencion: turnoActualizado.lugarAtencion ?? turnoActualizado.profesional.lugarAtencion ?? undefined,
         linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
       },
     });
@@ -711,7 +727,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     profesional: `Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido}`,
     especialidad: turnoActualizado.profesional.especialidad.nombre,
     modalidad: turnoActualizado.modalidad,
-    lugarAtencion: turnoActualizado.profesional.lugarAtencion ?? undefined,
+    lugarAtencion: turnoActualizado.lugarAtencion ?? turnoActualizado.profesional.lugarAtencion ?? undefined,
     linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
   };
 
