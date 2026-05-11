@@ -73,13 +73,15 @@ describe('Auth Utils', () => {
   describe('Password validation', () => {
     it('should validate strong passwords', () => {
       const isValidPassword = (password: string) => {
-        return password.length >= 8 && /\d/.test(password);
+        return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/.test(password);
       };
-      
-      expect(isValidPassword('12345678')).toBe(true);
-      expect(isValidPassword('password123')).toBe(true);
-      expect(isValidPassword('password')).toBe(false);
-      expect(isValidPassword('1234567')).toBe(false);
+
+      expect(isValidPassword('Password123!')).toBe(true);
+      expect(isValidPassword('Password123')).toBe(false);
+      expect(isValidPassword('password123!')).toBe(false);
+      expect(isValidPassword('PASSWORD123!')).toBe(false);
+      expect(isValidPassword('Password!')).toBe(false);
+      expect(isValidPassword('Pas123!')).toBe(false);
       expect(isValidPassword('')).toBe(false);
     });
   });

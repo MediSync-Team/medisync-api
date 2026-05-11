@@ -9,11 +9,14 @@ import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
+const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/;
+const strongPasswordMessage = 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial';
+
 router.post(
   '/register',
   [
     body('email').isEmail().normalizeEmail(),
-    body('password').isLength({ min: 6 }),
+    body('password').matches(STRONG_PASSWORD_REGEX).withMessage(strongPasswordMessage),
     body('rol').isIn(['PROFESIONAL', 'PACIENTE', 'CLINICA']),
     body('nombre').notEmpty().trim(),
     body('apellido').notEmpty().trim(),
@@ -263,7 +266,7 @@ router.post(
   '/reset-password',
   [
     body('token').notEmpty(),
-    body('newPassword').isLength({ min: 8 }),
+    body('newPassword').matches(STRONG_PASSWORD_REGEX).withMessage(strongPasswordMessage),
   ],
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
