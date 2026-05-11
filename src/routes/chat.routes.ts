@@ -6,7 +6,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { createNotification } from '../services/notification.service';
 
 const router = Router();
-router.use(authMiddleware);
+router.use(authMiddleware());
 
 /** Verify requesting user is paciente or profesional of the turno */
 async function assertChatAccess(turnoId: string, req: AuthRequest) {

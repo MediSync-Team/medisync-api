@@ -17,7 +17,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // ── GET /api/google/auth-url ─────────────────────────────────────────────────
 // State encodes userId|rol so the callback can redirect to the correct dashboard.
-router.get('/auth-url', authMiddleware, asyncHandler(async (req: AuthRequest, res) => {
+router.get('/auth-url', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { userId, rol } = req.user!;
   if (rol !== 'PROFESIONAL' && rol !== 'PACIENTE') {
     throw new AppError(403, 'FORBIDDEN', 'Solo profesionales y pacientes pueden conectar Google Calendar');
@@ -57,7 +57,7 @@ router.get('/callback', asyncHandler(async (req, res) => {
 }));
 
 // ── DELETE /api/google/disconnect ────────────────────────────────────────────
-router.delete('/disconnect', authMiddleware, asyncHandler(async (req: AuthRequest, res) => {
+router.delete('/disconnect', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const usuario = await prisma.usuario.findUnique({ where: { id: req.user!.userId } });
   if (!usuario) throw new AppError(404, 'NOT_FOUND', 'Usuario no encontrado');
 
@@ -81,7 +81,7 @@ router.delete('/disconnect', authMiddleware, asyncHandler(async (req: AuthReques
 }));
 
 // ── GET /api/google/status ───────────────────────────────────────────────────
-router.get('/status', authMiddleware, asyncHandler(async (req: AuthRequest, res) => {
+router.get('/status', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const usuario = await prisma.usuario.findUnique({
     where: { id: req.user!.userId },
     select: { googleToken: true },
