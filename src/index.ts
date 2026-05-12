@@ -166,7 +166,13 @@ const waitlistJob = cron.schedule('*/30 * * * *', async () => {
   }
 });
 
+let shuttingDown = false;
+
 function gracefulShutdown(signal: string) {
+  if (shuttingDown) {
+    process.exit(1);
+  }
+  shuttingDown = true;
   console.log(`[shutdown] ${signal} received, closing server...`);
   reminderJob.stop();
   waitlistJob.stop();
@@ -176,11 +182,10 @@ function gracefulShutdown(signal: string) {
       process.exit(0);
     }).catch(() => process.exit(1));
   });
-  // Force exit after 10 seconds if connections don't close
   setTimeout(() => {
-    console.error('[shutdown] Forced exit after 10s timeout');
+    console.error('[shutdown] Forced exit');
     process.exit(1);
-  }, 10_000);
+  }, 3_000);
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
