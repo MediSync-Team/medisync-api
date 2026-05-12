@@ -103,7 +103,9 @@ function infoBox(label: string, value: string, color = '#1E293B'): string {
 
 function primaryButton(text: string, url?: string): string {
   if (!url) return '';
-  return `<a href="${url}" style="display:inline-block;margin-top:20px;padding:12px 28px;background:${EMAIL_BRAND_COLOR};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">${text}</a>`;
+  return `<div style="text-align:center;margin-top:20px;">
+    <a href="${url}" style="display:inline-block;padding:12px 28px;background:${EMAIL_BRAND_COLOR};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">${text}</a>
+  </div>`;
 }
 
 function buildEmailHtml(payload: NotificationPayload): string {
@@ -177,9 +179,16 @@ function buildEmailHtml(payload: NotificationPayload): string {
        </table>`
     : '';
 
-  const ctaHtml = meta.linkVideollamada && typeof meta.linkVideollamada === 'string'
-    ? primaryButton('Unirse a la consulta', meta.linkVideollamada)
-    : '';
+  let ctaHtml = '';
+  if (meta.linkVideollamada && typeof meta.linkVideollamada === 'string') {
+    ctaHtml = primaryButton('Unirse a la consulta', meta.linkVideollamada);
+  } else if (event === 'RECUPERAR_CONTRASENA' && meta.resetUrl && typeof meta.resetUrl === 'string') {
+    ctaHtml = primaryButton('Restablecer contraseña', meta.resetUrl);
+  } else if (event === 'BOOKING_CONFIRMATION' && meta.confirmUrl && typeof meta.confirmUrl === 'string') {
+    ctaHtml = primaryButton('Confirmar mi turno', meta.confirmUrl);
+  } else if (event === 'INVITACION_CLINICA' && meta.acceptUrl && typeof meta.acceptUrl === 'string') {
+    ctaHtml = primaryButton('Aceptar invitación', meta.acceptUrl);
+  }
 
   const body = `
     <div style="text-align:center;margin-bottom:24px;">

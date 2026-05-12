@@ -36,6 +36,8 @@ import { expireStaleWaitlistNotifications } from './services/waitlist.service';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const nodeEnv = (process.env.NODE_ENV || '').trim().toLowerCase();
+const isProduction = nodeEnv === 'production';
 
 const normalizeOrigin = (value: string): string | null => {
   const trimmed = value.trim().replace(/\/+$/, '');
@@ -48,13 +50,17 @@ const normalizeOrigin = (value: string): string | null => {
   }
 };
 
+const isLoopbackHostname = (hostname: string): boolean => (
+  ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
+);
+
 const envOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
-  .split(',')
+  .split(/[\s,;]+/)
   .map((origin) => normalizeOrigin(origin))
   .filter((origin): origin is string => Boolean(origin));
 
-const devOrigins = process.env.NODE_ENV === 'development'
-  ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+const devOrigins = !isProduction
+  ? ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']
   : [];
 
 const allowedOrigins = new Set([...envOrigins, ...devOrigins]);
@@ -80,10 +86,10 @@ const corsOptions: CorsOptions = {
       return;
     }
 
-    if (process.env.NODE_ENV === 'development' && normalizedOrigin) {
+    if (!isProduction && normalizedOrigin) {
       try {
         const url = new URL(normalizedOrigin);
-        const isLocalHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+        const isLocalHost = isLoopbackHostname(url.hostname);
         if (isLocalHost) {
           callback(null, true);
           return;
