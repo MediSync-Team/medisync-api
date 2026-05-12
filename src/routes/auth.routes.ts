@@ -357,7 +357,7 @@ router.post('/exchange-code', asyncHandler(async (req, res) => {
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   });
-  res.json(success({ dest: entry.dest }));
+  res.json(success({ token: entry.token, dest: entry.dest }));
 }));
 
 // ── SSO Helper ──
