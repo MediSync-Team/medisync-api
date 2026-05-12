@@ -2,22 +2,15 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { findProfesionalByUserId, findPacienteByUserId } from '../utils/auth-helpers';
 
 const router = Router();
 
 router.get('/profesional', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!profesional) {
-    throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
-  }
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const now = new Date();
-  const manana = new Date(now);
-  manana.setDate(manana.getDate() + 1);
-  manana.setHours(23, 59, 59, 999);
+  const manana = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 23, 59, 59, 999);
 
   const turnosManana = await prisma.turno.findMany({
     where: {
@@ -52,17 +45,10 @@ router.get('/profesional', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 }));
 
 router.get('/paciente', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const now = new Date();
-  const en24hs = new Date(now);
-  en24hs.setHours(en24hs.getHours() + 24);
+  const en24hs = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
   const turnosProximos = await prisma.turno.findMany({
     where: {

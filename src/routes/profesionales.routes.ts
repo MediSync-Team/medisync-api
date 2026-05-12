@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { body, validationResult } from 'express-validator';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { findProfesionalByUserId } from '../utils/auth-helpers';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
@@ -16,13 +17,10 @@ router.get('/', asyncHandler(async (req, res) => {
     disponibleEstaSemana,
     obraSocial,
     orderBy: orderByParam,
-    page = 1,
-    limit = 10,
   } = req.query;
 
   const filterDisponible = disponibleEstaSemana === 'true';
-  const pageNum  = Number(page);
-  const limitNum = Number(limit);
+  const { page: pageNum, limit: limitNum } = parsePagination(req);
 
   const where: any = { activo: true };
 
@@ -181,7 +179,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
   res.json(success({
     profesionales: paginated,
-    pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
+    pagination: buildPaginationMeta(pageNum, limitNum, total),
   }));
 }));
 
@@ -213,11 +211,10 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const authReq = req as AuthRequest;
   const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl, obrasSociales } = req.body;
 
-  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: authReq.user!.userId } });
-  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para editar este perfil');
   }
 
@@ -253,8 +250,8 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
 router.post('/:id/disponibilidad', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const { diaSemana, horaInicio, horaFin, modalidad, lugarAtencion } = req.body;
 
-  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para gestionar esta disponibilidad');
   }
 
@@ -321,10 +318,9 @@ router.get('/:id/disponibilidad', asyncHandler(async (req, res) => {
   res.json(success(disponibilidades));
 }));
 
-router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyncHandler(async (req, res) => {
-  const authReq = req as AuthRequest;
-  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: authReq.user!.userId } });
-  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para eliminar esta disponibilidad');
   }
 
@@ -351,14 +347,12 @@ router.delete('/:id/disponibilidad/:dispId', authMiddleware('PROFESIONAL'), asyn
 }));
 
 router.get('/:id/auditoria', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesionalOwner = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesionalOwner || profesionalOwner.id !== req.params.id) {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos');
   }
 
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(50, Number(req.query.limit) || 20);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req, { limit: 20, maxLimit: 50 });
 
   const where: any = { profesionalId: req.params.id };
   if (req.query.tipoEvento) where.tipoEvento = req.query.tipoEvento;
@@ -370,13 +364,15 @@ router.get('/:id/auditoria', authMiddleware('PROFESIONAL'), asyncHandler(async (
     prisma.auditoriaDisponibilidad.count({ where }),
   ]);
 
-  res.json(success({ data: items, meta: { total, page, limit } }));
+  res.json(success({ data: items, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   const { fecha, modalidad } = req.query;
-  const fechaStr = String(fecha);
-  const [year, month, day] = fechaStr.split('-').map(Number);
+  if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
+  }
+  const [year, month, day] = fecha.split('-').map(Number);
   const fechaDate = new Date(year, month - 1, day);
   const diaSemana = fechaDate.getDay();
 

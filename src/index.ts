@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import http from 'http';
 import express from 'express';
-import cors, { type CorsOptions } from 'cors';
+import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
@@ -33,37 +33,19 @@ import { suscripcionesRouter } from './routes/suscripciones.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 import { expireStaleWaitlistNotifications } from './services/waitlist.service';
+import { createCorsOriginRules, isOriginAllowed } from './config/cors';
+import prisma from './lib/prisma';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const nodeEnv = (process.env.NODE_ENV || '').trim().toLowerCase();
 const isProduction = nodeEnv === 'production';
 
-const normalizeOrigin = (value: string): string | null => {
-  const trimmed = value.trim().replace(/\/+$/, '');
-  if (!trimmed) return null;
-  try {
-    const url = new URL(trimmed);
-    return url.origin;
-  } catch {
-    return null;
-  }
-};
-
-const isLoopbackHostname = (hostname: string): boolean => (
-  ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
-);
-
-const envOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
-  .split(/[\s,;]+/)
-  .map((origin) => normalizeOrigin(origin))
-  .filter((origin): origin is string => Boolean(origin));
-
-const devOrigins = !isProduction
-  ? ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']
-  : [];
-
-const allowedOrigins = new Set([...envOrigins, ...devOrigins]);
+const corsRules = createCorsOriginRules({
+  frontendUrls: process.env.FRONTEND_URLS,
+  frontendUrl: process.env.FRONTEND_URL,
+  isProduction,
+});
 
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
@@ -73,33 +55,19 @@ app.set('trust proxy', 1);
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
 
-const corsOptions: CorsOptions = {
-  origin: (origin, callback) => {
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     if (!origin) {
       callback(null, true);
       return;
     }
 
-    const normalizedOrigin = normalizeOrigin(origin);
-    if (normalizedOrigin && allowedOrigins.has(normalizedOrigin)) {
+    if (isOriginAllowed(origin, corsRules, isProduction)) {
       callback(null, true);
       return;
     }
 
-    if (!isProduction && normalizedOrigin) {
-      try {
-        const url = new URL(normalizedOrigin);
-        const isLocalHost = isLoopbackHostname(url.hostname);
-        if (isLocalHost) {
-          callback(null, true);
-          return;
-        }
-      } catch {
-        // Keep default rejection path
-      }
-    }
-
-    console.warn(`[CORS] Origin rechazado: ${origin}. Permitidos: ${Array.from(allowedOrigins).join(', ')}`);
+    console.warn(`[CORS] Origin rechazado: ${origin}. Permitidos: ${corsRules.allowedOriginDescriptions.join(', ')}`);
     callback(new Error('CORS no permitido'));
   },
   credentials: true,
@@ -182,7 +150,7 @@ httpServer.listen(PORT, () => {
   console.log(`📹 Video WS: ws://localhost:${PORT}/ws/video`);
 });
 
-cron.schedule('*/30 * * * *', async () => {
+const reminderJob = cron.schedule('*/30 * * * *', async () => {
   try {
     await sendUpcomingAppointmentsReminders();
   } catch (err) {
@@ -190,12 +158,32 @@ cron.schedule('*/30 * * * *', async () => {
   }
 });
 
-cron.schedule('*/30 * * * *', async () => {
+const waitlistJob = cron.schedule('*/30 * * * *', async () => {
   try {
     await expireStaleWaitlistNotifications();
   } catch (err) {
     console.error('[waitlist] expiry job error:', err);
   }
 });
+
+function gracefulShutdown(signal: string) {
+  console.log(`[shutdown] ${signal} received, closing server...`);
+  reminderJob.stop();
+  waitlistJob.stop();
+  httpServer.close(() => {
+    prisma.$disconnect().then(() => {
+      console.log('[shutdown] Prisma disconnected, exiting.');
+      process.exit(0);
+    }).catch(() => process.exit(1));
+  });
+  // Force exit after 10 seconds if connections don't close
+  setTimeout(() => {
+    console.error('[shutdown] Forced exit after 10s timeout');
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 export default app;

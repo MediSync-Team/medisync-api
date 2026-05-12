@@ -4,6 +4,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { createNotification } from '../services/notification.service';
+import { findProfesionalByUserId } from '../utils/auth-helpers';
 
 const router = Router();
 
@@ -27,8 +28,7 @@ function buildBlockRange(inicio: Date, fin: Date, horaInicio?: string | null, ho
 
 // GET /api/bloqueos — lista de bloqueos del profesional autenticado
 router.get('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const { soloFuturos = 'true' } = req.query;
   const where: any = { profesionalId: profesional.id };
@@ -79,8 +79,7 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
     }
   }
 
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const result = await prisma.$transaction(async (tx) => {
     const bloqueo = await tx.bloqueoDisponibilidad.create({
@@ -169,8 +168,7 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
 
 // DELETE /api/bloqueos/:id — eliminar un bloqueo
 router.delete('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const bloqueo = await prisma.bloqueoDisponibilidad.findUnique({ where: { id: req.params.id } });
   if (!bloqueo) throw new AppError(404, 'NOT_FOUND', 'Bloqueo no encontrado');

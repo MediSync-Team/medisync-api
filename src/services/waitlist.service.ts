@@ -46,23 +46,38 @@ async function sendWaitlistNotification(params: {
 }) {
   const { start, end } = getUtcDayBounds(params.fechaHora);
 
-  const candidato = await prisma.listaEspera.findFirst({
-    where: {
-      profesionalId: params.profesionalId,
-      modalidad: params.modalidad,
-      estado: 'ACTIVA',
-      fecha: { gte: start, lt: end },
-    },
-    include: { paciente: true, profesional: true },
-    orderBy: { createdAt: 'asc' },
+  // Use a transaction with a row-level lock to atomically claim one entry,
+  // preventing the TOCTOU race condition where two concurrent calls could
+  // both read the same ACTIVA entry and send duplicate notifications.
+  const candidato = await prisma.$transaction(async (tx) => {
+    // Find the oldest ACTIVA entry for this slot
+    const entry = await tx.listaEspera.findFirst({
+      where: {
+        profesionalId: params.profesionalId,
+        modalidad: params.modalidad,
+        estado: 'ACTIVA',
+        fecha: { gte: start, lt: end },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!entry) return null;
+
+    // Atomically claim it by setting estado to NOTIFICADA
+    // Using update with the specific ID ensures only this one row is affected
+    await tx.listaEspera.update({
+      where: { id: entry.id },
+      data: { estado: 'NOTIFICADA', notificadoAt: new Date() },
+    });
+
+    // Re-fetch with relations for notification data
+    return await tx.listaEspera.findUnique({
+      where: { id: entry.id },
+      include: { paciente: true, profesional: true },
+    });
   });
 
   if (!candidato) return;
-
-  await prisma.listaEspera.update({
-    where: { id: candidato.id },
-    data: { estado: 'NOTIFICADA', notificadoAt: new Date() },
-  });
 
   const fechaStr = params.fechaHora.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
   const horaStr  = params.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });

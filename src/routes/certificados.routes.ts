@@ -12,6 +12,10 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
     throw new AppError(400, 'VALIDATION_ERROR', 'turnoId, diagnostico y texto son requeridos');
   }
 
+  if (tipo && !['REPOSO', 'CONSULTA', 'APTITUD', 'LIBRE'].includes(tipo)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'tipo debe ser REPOSO, CONSULTA, APTITUD o LIBRE');
+  }
+
   const turno = await prisma.turno.findUnique({
     where: { id: turnoId },
     include: { profesional: true },

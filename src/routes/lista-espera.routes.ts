@@ -2,17 +2,12 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, AppError, success } from '../utils/response';
+import { findPacienteByUserId } from '../utils/auth-helpers';
 
 const router = Router();
 
 router.get('/mis-suscripciones', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const items = await prisma.listaEspera.findMany({
     where: {
@@ -51,13 +46,7 @@ router.post('/suscribirme', authMiddleware('PACIENTE'), asyncHandler(async (req:
   }
   fechaObjetivo.setUTCHours(0, 0, 0, 0);
 
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const profesional = await prisma.profesional.findUnique({
     where: { id: String(profesionalId) },
@@ -95,13 +84,7 @@ router.post('/suscribirme', authMiddleware('PACIENTE'), asyncHandler(async (req:
 }));
 
 router.delete('/:id', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const item = await prisma.listaEspera.findUnique({
     where: { id: req.params.id },

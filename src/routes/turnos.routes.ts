@@ -14,6 +14,9 @@ import {
   syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
   syncTurnoCreatedForPaciente, syncTurnoRescheduledForPaciente, syncTurnoCancelledForPaciente,
 } from '../services/calendar-sync.service';
+import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
+import { validateRequest } from '../utils/validation';
 import rateLimit from 'express-rate-limit';
 
 const router = Router();
@@ -30,11 +33,6 @@ const bookingLimiter = rateLimit({
     return req.user?.rol === 'PACIENTE';
   },
 });
-
-async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
-  return profesional?.id || null;
-}
 
 async function assertTurnoAccess(turnoId: string, req: AuthRequest) {
   const turno = await prisma.turno.findUnique({
@@ -81,9 +79,7 @@ router.get('/mi-historial', authMiddleware('PACIENTE'), asyncHandler(async (req:
   const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
   if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
 
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(50, Number(req.query.limit) || 10);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req);
 
   const where = { pacienteId: paciente.id, estado: 'COMPLETADO' as const };
   const [turnos, total] = await Promise.all([
@@ -103,14 +99,13 @@ router.get('/mi-historial', authMiddleware('PACIENTE'), asyncHandler(async (req:
     prisma.turno.count({ where }),
   ]);
 
-  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ turnos, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const authReq = req as AuthRequest;
   const { tipo } = req.query;
 
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: authReq.user!.userId } });
+  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
 
   if (!paciente) {
     throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
@@ -126,9 +121,7 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
     whereClause.fechaHora = { lt: now };
   }
 
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(50, Number(req.query.limit) || 10);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req);
 
   const [turnos, total] = await Promise.all([
     prisma.turno.findMany({
@@ -141,7 +134,7 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
     prisma.turno.count({ where: whereClause }),
   ]);
 
-  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ turnos, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
@@ -160,9 +153,7 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
     if (hasta) where.fechaHora.lte = new Date(String(hasta));
   }
 
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(50, Number(req.query.limit) || 10);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req);
 
   const [turnos, total] = await Promise.all([
     prisma.turno.findMany({
@@ -175,7 +166,7 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
     prisma.turno.count({ where }),
   ]);
 
-  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ turnos, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (req, res) => {
@@ -264,10 +255,7 @@ router.post(
     body('paciente.apellido').optional().isLength({ min: 1, max: 100 }),
   ],
   asyncHandler(async (req: AuthRequest, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Datos inválidos');
-    }
+    validateRequest(validationResult(req));
 
     const { profesionalId, fechaHora, modalidad, paciente: pacienteData } = req.body;
     const fechaHoraDate = new Date(fechaHora);
@@ -1193,10 +1181,7 @@ router.get('/:id/auditoria-cancelacion', authMiddleware(), asyncHandler(async (r
 router.post('/confirmar-reserva', [
   body('token').isString().isLength({ min: 32 }),
 ], asyncHandler(async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Token inválido');
-  }
+  validateRequest(validationResult(req));
 
   const { token } = req.body;
 

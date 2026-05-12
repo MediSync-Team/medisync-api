@@ -144,19 +144,11 @@ router.post('/test', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   const text = mensaje || 'Notificación de prueba MediSync';
 
   if (!ALLOWED_CHANNELS.includes(channel as AllowedChannel)) {
-    res.status(400).json({
-      success: false,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: `Canal inválido. Usá uno de: ${ALLOWED_CHANNELS.join(', ')}`,
-      },
-    });
-    return;
+    throw new AppError(400, 'VALIDATION_ERROR', `Canal inválido. Usá uno de: ${ALLOWED_CHANNELS.join(', ')}`);
   }
 
   if (!req.user) {
-    res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'No autenticado' } });
-    return;
+    throw new AppError(401, 'UNAUTHORIZED', 'No autenticado');
   }
 
   // Fetch phone number so WhatsApp test can work

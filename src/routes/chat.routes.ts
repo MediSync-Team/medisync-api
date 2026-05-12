@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { validateRequest } from '../utils/validation';
 import { createNotification } from '../services/notification.service';
 
 const router = Router();
@@ -67,8 +68,7 @@ router.post(
   '/:turnoId',
   body('contenido').isString().trim().isLength({ min: 1, max: 2000 }),
   asyncHandler(async (req: AuthRequest, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) throw new AppError(400, 'VALIDATION_ERROR', errors.array()[0].msg as string);
+    validateRequest(validationResult(req));
 
     const { turnoId } = req.params;
     const { contenido } = req.body;

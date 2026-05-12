@@ -2,6 +2,7 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
@@ -54,9 +55,7 @@ router.get('/stats', asyncHandler(async (_req, res) => {
 
 // ── Usuarios ────────────────────────────────────────────────────────────────
 router.get('/usuarios', asyncHandler(async (req, res) => {
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(100, Number(req.query.limit) || 20);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req, { limit: 20, maxLimit: 100 });
   const search = (req.query.search as string) || '';
 
   const where = search
@@ -93,7 +92,7 @@ router.get('/usuarios', asyncHandler(async (req, res) => {
     prisma.usuario.count({ where }),
   ]);
 
-  res.json(success({ usuarios, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ usuarios, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 // Toggle professional active state (suspend/unsuspend)
@@ -103,7 +102,7 @@ router.patch('/usuarios/:id/toggle-activo', asyncHandler(async (req, res) => {
     include: { profesional: true },
   });
   if (!usuario) throw new AppError(404, 'NOT_FOUND', 'Usuario no encontrado');
-  if (!usuario.profesional) throw new AppError(400, 'BAD_REQUEST', 'Solo se puede suspender profesionales');
+  if (!usuario.profesional) throw new AppError(400, 'VALIDATION_ERROR', 'Solo se puede suspender profesionales');
 
   const updated = await prisma.profesional.update({
     where: { usuarioId: req.params.id },
@@ -115,9 +114,7 @@ router.patch('/usuarios/:id/toggle-activo', asyncHandler(async (req, res) => {
 
 // ── Profesionales ────────────────────────────────────────────────────────────
 router.get('/profesionales', asyncHandler(async (req, res) => {
-  const page  = Math.max(1, Number(req.query.page)  || 1);
-  const limit = Math.min(100, Number(req.query.limit) || 20);
-  const skip  = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req, { limit: 20, maxLimit: 100 });
   const search = (req.query.search as string) || '';
 
   const where = search
@@ -161,14 +158,12 @@ router.get('/profesionales', asyncHandler(async (req, res) => {
     totalResenas: ratingMap[p.id]?.count ?? 0,
   }));
 
-  res.json(success({ profesionales: result, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ profesionales: result, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 // ── Turnos ────────────────────────────────────────────────────────────────
 router.get('/turnos', asyncHandler(async (req, res) => {
-  const page   = Math.max(1, Number(req.query.page)  || 1);
-  const limit  = Math.min(100, Number(req.query.limit) || 20);
-  const skip   = (page - 1) * limit;
+  const { page, limit, skip } = parsePagination(req, { limit: 20, maxLimit: 100 });
   const estado = req.query.estado as string | undefined;
   const search = (req.query.search as string) || '';
 
@@ -198,7 +193,7 @@ router.get('/turnos', asyncHandler(async (req, res) => {
     prisma.turno.count({ where }),
   ]);
 
-  res.json(success({ turnos, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  res.json(success({ turnos, pagination: buildPaginationMeta(page, limit, total) }));
 }));
 
 // ── Analytics ─────────────────────────────────────────────────────────────
@@ -338,7 +333,7 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
 // ── Especialidades CRUD ───────────────────────────────────────────────────
 router.post('/especialidades', asyncHandler(async (req, res) => {
   const { nombre, descripcion, icono } = req.body;
-  if (!nombre?.trim()) throw new AppError(400, 'BAD_REQUEST', 'Nombre requerido');
+  if (!nombre?.trim()) throw new AppError(400, 'VALIDATION_ERROR', 'Nombre requerido');
 
   const existe = await prisma.especialidad.findFirst({ where: { nombre: { equals: nombre.trim(), mode: 'insensitive' } } });
   if (existe) throw new AppError(409, 'CONFLICT', 'Ya existe una especialidad con ese nombre');

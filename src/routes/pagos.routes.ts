@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
+import { validateAndApplyCoupon } from '../utils/coupon';
 
 const router = Router();
 
@@ -33,7 +34,8 @@ function parseSignatureHeader(signature: string) {
   let v1 = '';
 
   for (const part of parts) {
-    const [key, value] = part.split('=');
+    const [key, ...rest] = part.split('=');
+    const value = rest.join('=');
     if (key === 'ts') ts = value || '';
     if (key === 'v1') v1 = value || '';
   }
@@ -110,33 +112,10 @@ router.post(
 
     // Validate and apply coupon if provided
     if (cuponCodigo) {
-      const codigoUpper = cuponCodigo.toUpperCase();
-      const cupon = await prisma.cupon.findUnique({ where: { codigo: codigoUpper } });
-
-      if (!cupon) {
-        throw new AppError(400, 'INVALID_COUPON', 'El código de cupón no es válido');
-      }
-      if (!cupon.activo) {
-        throw new AppError(400, 'INACTIVE_COUPON', 'El cupón está inactivo');
-      }
-      if (cupon.profesionalId !== turno.profesionalId) {
-        throw new AppError(400, 'COUPON_NOT_FOR_PROFESSIONAL', 'El cupón no es válido para este profesional');
-      }
-      if (cupon.expiresAt && cupon.expiresAt < new Date()) {
-        throw new AppError(400, 'EXPIRED_COUPON', 'El cupón ha expirado');
-      }
-      if (cupon.maxUsos && cupon.usosActuales >= cupon.maxUsos) {
-        throw new AppError(400, 'COUPON_EXHAUSTED', 'El cupón ha alcanzado el máximo de usos');
-      }
-
-      // Calculate discount
-      if (cupon.tipo === 'PORCENTAJE') {
-        montoDescuento = (precio * Number(cupon.valor)) / 100;
-      } else {
-        montoDescuento = Number(cupon.valor);
-      }
-      precioFinal = Math.max(0, precio - montoDescuento);
-      cuponId = cupon.id;
+      const couponResult = await validateAndApplyCoupon(cuponCodigo, turnoId, turno.profesionalId, precio);
+      precioFinal = couponResult.montoFinal;
+      cuponId = couponResult.cuponId;
+      montoDescuento = couponResult.montoDescuento;
     }
 
     const preferenceData = {

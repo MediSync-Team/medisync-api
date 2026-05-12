@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { body, validationResult } from 'express-validator';
 import prisma from '../lib/prisma';
-import { generateToken, authMiddleware } from '../middleware/auth.middleware';
+import { generateToken, authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, success, AppError } from '../utils/response';
-import { AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
+import { setTokenCookie } from '../utils/auth-helpers';
+import { validateRequest } from '../utils/validation';
 
 const router = Router();
 
@@ -24,10 +26,7 @@ router.post(
     body('genero').optional().isIn(['MASCULINO', 'FEMENINO', 'OTRO', 'NO_ESPECIFICADO']),
   ],
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new AppError(400, 'VALIDATION_ERROR', errors.array()[0].msg);
-    }
+    validateRequest(validationResult(req));
 
     const { email, password, rol, nombre, apellido, telefono, genero, matricula, especialidadId, precioConsulta, lugarAtencion, bio, fotoUrl } = req.body;
 
@@ -100,13 +99,7 @@ router.post(
       meta: { nombre: displayName, rol },
     }).catch((err) => console.error('[auth] welcome email error:', err));
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    setTokenCookie(res, token);
     res.status(201).json(success({ token, user: { id: user.id, email: user.email, rol: user.rol } }));
   })
 );
@@ -181,21 +174,14 @@ router.post(
     const perfil = user.profesional || user.paciente;
     const token = generateToken({ userId: user.id, email: user.email, rol: user.rol });
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    setTokenCookie(res, token);
     res.json(success({ token, user: { id: user.id, email: user.email, rol: user.rol, perfil } }));
   })
 );
 
 router.get('/me', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
-  const authReq = req as AuthRequest;
   const user = await prisma.usuario.findUnique({
-    where: { id: authReq.user!.userId },
+    where: { id: req.user!.userId },
     include: {
       profesional: { include: { especialidad: true } },
       paciente: true,
@@ -350,13 +336,7 @@ router.post('/exchange-code', asyncHandler(async (req, res) => {
   }
 
   ssoPendingCodes.delete(code); // single-use
-  res.cookie('token', entry.token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: '/',
-  });
+  setTokenCookie(res, entry.token);
   res.json(success({ token: entry.token, dest: entry.dest }));
 }));
 
@@ -434,7 +414,6 @@ async function upsertSSOUser({ provider, providerAccountId, email, nombre, apell
 // ── SSO Routes ──
 
 import { getGoogleAuthUrl, exchangeGoogleCode } from '../services/sso.service';
-import crypto from 'crypto';
 
 // GET /api/auth/google?rol=PACIENTE|PROFESIONAL
 router.get('/google', (req, res) => {
@@ -506,13 +485,7 @@ router.get('/google/callback', asyncHandler(async (req, res) => {
     const dest = isNew && user.rol === 'PROFESIONAL' ? '/auth/completa-perfil' : '/dashboard';
     const ssoCode = createSSOCode(token, dest);
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    setTokenCookie(res, token);
     res.redirect(`${process.env.FRONTEND_URL}/auth/callback?code=${ssoCode}`);
   } catch (err: any) {
     const errorCode = err.code || 'SSO_ERROR';

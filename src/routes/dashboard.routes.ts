@@ -2,19 +2,13 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { findProfesionalByUserId } from '../utils/auth-helpers';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
 router.get('/dashboard', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const authReq = req as AuthRequest;
-
-  const profesional = await prisma.profesional.findUnique({
-    where: { usuarioId: authReq.user!.userId },
-  });
-
-  if (!profesional) {
-    throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
-  }
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -70,62 +64,87 @@ router.get('/dashboard', authMiddleware('PROFESIONAL'), asyncHandler(async (req:
 }));
 
 router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const authReq = req as AuthRequest;
-
-  const profesional = await prisma.profesional.findUnique({
-    where: { usuarioId: authReq.user!.userId },
-  });
-
-  if (!profesional) {
-    throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
-  }
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const now = new Date();
   const mesesAtras = 6;
+
+  // Single aggregation query instead of N+1 findMany per month
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - mesesAtras + 1, 1);
+
+  const [turnosPorEstado, pagosPorMes, totalTurnos, pacientesUnicos] = await Promise.all([
+    // Group turnos by estado over the last 6 months
+    prisma.turno.groupBy({
+      by: ['estado'],
+      where: {
+        profesionalId: profesional.id,
+        fechaHora: { gte: sixMonthsAgo },
+      },
+      _count: true,
+    }),
+    // Group pagos by month for revenue calculation
+    prisma.pago.findMany({
+      where: {
+        turno: { profesionalId: profesional.id, fechaHora: { gte: sixMonthsAgo } },
+        estado: 'APROBADO',
+      },
+      select: {
+        monto: true,
+        montoNeto: true,
+        turno: { select: { fechaHora: true } },
+      },
+    }),
+    prisma.turno.count({
+      where: { profesionalId: profesional.id },
+    }),
+    prisma.turno.groupBy({
+      by: ['pacienteId'],
+      where: { profesionalId: profesional.id, pacienteId: { not: null } },
+    }),
+  ]);
+
+  // Build monthly buckets from the flat pago results
+  const monthMap = new Map<string, { bruto: number; neto: number }>();
+  for (const pago of pagosPorMes) {
+    const fecha = pago.turno.fechaHora;
+    const key = fecha.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+    const entry = monthMap.get(key) ?? { bruto: 0, neto: 0 };
+    entry.bruto += Number(pago.monto);
+    entry.neto += Number(pago.montoNeto);
+    monthMap.set(key, entry);
+  }
+
+  // Also get turno counts per month for the 6-month window
+  const turnos6m = await prisma.turno.findMany({
+    where: { profesionalId: profesional.id, fechaHora: { gte: sixMonthsAgo } },
+    select: { estado: true, fechaHora: true },
+  });
+
   const turnosPorMes: { mes: string; total: number; completados: number; cancelados: number; ausentes: number }[] = [];
   const ingresosPorMes: { mes: string; bruto: number; neto: number }[] = [];
 
   for (let i = mesesAtras - 1; i >= 0; i--) {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-
-    const turnos = await prisma.turno.findMany({
-      where: {
-        profesionalId: profesional.id,
-        fechaHora: { gte: startOfMonth, lte: endOfMonth },
-      },
-      include: { pago: true },
-    });
-
-    const completados = turnos.filter(t => t.estado === 'COMPLETADO').length;
-    const cancelados = turnos.filter(t => t.estado === 'CANCELADO').length;
-    const ausentes = turnos.filter(t => t.estado === 'AUSENTE').length;
-
     const mesNombre = startOfMonth.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+
+    const monthTurnos = turnos6m.filter(t => t.fechaHora >= startOfMonth && t.fechaHora <= endOfMonth);
 
     turnosPorMes.push({
       mes: mesNombre,
-      total: turnos.length,
-      completados,
-      cancelados,
-      ausentes,
+      total: monthTurnos.length,
+      completados: monthTurnos.filter(t => t.estado === 'COMPLETADO').length,
+      cancelados: monthTurnos.filter(t => t.estado === 'CANCELADO').length,
+      ausentes: monthTurnos.filter(t => t.estado === 'AUSENTE').length,
     });
 
-    const pagosAprobados = turnos.filter(t => t.pago?.estado === 'APROBADO');
-    const bruto = pagosAprobados.reduce((acc, t) => acc + Number(t.pago?.monto || 0), 0);
-    const neto = pagosAprobados.reduce((acc, t) => acc + Number(t.pago?.montoNeto || 0), 0);
-
-    ingresosPorMes.push({ mes: mesNombre, bruto, neto });
+    const pagoEntry = monthMap.get(mesNombre) ?? { bruto: 0, neto: 0 };
+    ingresosPorMes.push({
+      mes: mesNombre,
+      bruto: pagoEntry.bruto,
+      neto: pagoEntry.neto,
+    });
   }
-
-  const totalTurnos = await prisma.turno.count({
-    where: { profesionalId: profesional.id },
-  });
-
-  const pacientesUnicos = await prisma.turno.groupBy({
-    by: ['pacienteId'],
-    where: { profesionalId: profesional.id, pacienteId: { not: null } },
-  });
 
   res.json(success({
     turnosPorMes,
@@ -140,16 +159,11 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 // ── GET /profesional/pagos ───────────────────────────────────────────────────
 // Lista de pagos recibidos por el profesional autenticado con filtros y resumen.
 router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
-  const { desde, hasta, estado, page = '1', limit = '20' } = req.query as Record<string, string>;
+  const { desde, hasta, estado } = req.query as Record<string, string>;
 
-  const pageNum  = Math.max(1, parseInt(page));
-  const pageSize = Math.min(100, Math.max(1, parseInt(limit)));
-  const skip     = (pageNum - 1) * pageSize;
+  const { page: pageNum, limit: pageSize, skip } = parsePagination(req, { limit: 20, maxLimit: 100 });
 
   // Build date range — default: last 12 months
   const now = new Date();
@@ -186,25 +200,31 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
     prisma.pago.count({ where: whereBase }),
   ]);
 
-  // Monthly summary — always last 12 months regardless of filter
-  const mesesResumen: { mes: string; bruto: number; neto: number; cantidad: number }[] = [];
+  // Monthly summary — single aggregation query instead of 12 findMany calls
+  const pagosAll = await prisma.pago.findMany({
+    where: {
+      turno: { profesionalId: profesional.id, fechaHora: { gte: defaultDesde } },
+    },
+    select: { monto: true, montoNeto: true, estado: true, createdAt: true },
+  });
+
+  const mesesResumenMap = new Map<string, { bruto: number; neto: number; cantidad: number }>();
   for (let i = 11; i >= 0; i--) {
     const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const end   = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-    const pagosDelMes = await prisma.pago.findMany({
-      where: {
-        turno: { profesionalId: profesional.id, fechaHora: { gte: start, lte: end } },
-        estado: 'APROBADO',
-      },
-      select: { monto: true, montoNeto: true },
+    const mesKey = start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+    const monthPagos = pagosAll.filter(p => {
+      const d = new Date(p.createdAt);
+      return d >= start && d <= end && p.estado === 'APROBADO';
     });
-    mesesResumen.push({
-      mes: start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' }),
-      bruto:    pagosDelMes.reduce((s, p) => s + Number(p.monto), 0),
-      neto:     pagosDelMes.reduce((s, p) => s + Number(p.montoNeto), 0),
-      cantidad: pagosDelMes.length,
+    mesesResumenMap.set(mesKey, {
+      bruto:    monthPagos.reduce((s, p) => s + Number(p.monto), 0),
+      neto:     monthPagos.reduce((s, p) => s + Number(p.montoNeto), 0),
+      cantidad: monthPagos.length,
     });
   }
+
+  const mesesResumen = Array.from(mesesResumenMap.entries()).map(([mes, data]) => ({ mes, ...data }));
 
   // Totals for the filtered period
   const todosEnRango = await prisma.pago.findMany({
@@ -224,7 +244,7 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 
   res.json(success({
     pagos,
-    pagination: { total, page: pageNum, limit: pageSize, pages: Math.ceil(total / pageSize) },
+    pagination: buildPaginationMeta(pageNum, pageSize, total),
     totales,
     mesesResumen,
   }));

@@ -26,11 +26,21 @@ function pushToUser(userId: string, data: object) {
   const clients = sseClients.get(userId);
   if (!clients || clients.length === 0) return;
   const payload = `data: ${JSON.stringify(data)}\n\n`;
+  const dead: Response[] = [];
   for (const res of clients) {
     try {
       res.write(payload);
     } catch {
-      // client disconnected mid-write — will be cleaned up on close
+      dead.push(res);
+    }
+  }
+  // Remove dead clients to prevent memory leaks from disconnected browsers
+  if (dead.length > 0) {
+    const alive = clients.filter(r => !dead.includes(r));
+    if (alive.length === 0) {
+      sseClients.delete(userId);
+    } else {
+      sseClients.set(userId, alive);
     }
   }
 }
@@ -87,7 +97,12 @@ export async function createNotification(input: CreateNotificationInput) {
       where: { id: input.usuarioId },
       select: { [prefKey]: true },
     });
-    return usuario ? (usuario as any)[prefKey] !== false : true;
+    if (!usuario) return true;
+    // Prisma's dynamic `select` returns an object whose key matches the
+    // prefKey. Access via bracket notation is safe because prefKey is one of
+    // the explicitly mapped string literals above.
+    const prefValue = usuario[prefKey];
+    return prefValue !== false;
   })();
 
   if (shouldPush) {

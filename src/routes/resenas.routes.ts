@@ -2,6 +2,8 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { findPacienteByUserId, findProfesionalByUserId } from '../utils/auth-helpers';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
@@ -13,8 +15,7 @@ router.post('/', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthReques
     throw new AppError(400, 'VALIDATION_ERROR', 'turnoId y rating (1-5) son requeridos');
   }
 
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const turno = await prisma.turno.findUnique({
     where: { id: turnoId },
@@ -44,10 +45,7 @@ router.post('/', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthReques
 
 // GET /api/resenas/profesional/:profesionalId — reseñas públicas de un profesional
 router.get('/profesional/:profesionalId', asyncHandler(async (req, res) => {
-  const { page = '1', limit = '10' } = req.query;
-  const p = Math.max(1, Number(page));
-  const l = Math.min(50, Number(limit));
-  const skip = (p - 1) * l;
+  const { page: p, limit: l, skip } = parsePagination(req);
 
   const [resenas, total, aggregate] = await Promise.all([
     prisma.resena.findMany({
@@ -67,7 +65,7 @@ router.get('/profesional/:profesionalId', asyncHandler(async (req, res) => {
 
   res.json(success({
     resenas,
-    pagination: { page: p, limit: l, total, totalPages: Math.ceil(total / l) },
+    pagination: buildPaginationMeta(p, l, total),
     stats: {
       promedio: aggregate._avg.rating ? Number(aggregate._avg.rating.toFixed(1)) : null,
       total: aggregate._count.rating,
@@ -77,8 +75,7 @@ router.get('/profesional/:profesionalId', asyncHandler(async (req, res) => {
 
 // GET /api/resenas/mi-resena/:turnoId — si el paciente ya calificó ese turno
 router.get('/mi-resena/:turnoId', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const resena = await prisma.resena.findFirst({
     where: { turnoId: req.params.turnoId, pacienteId: paciente.id },
@@ -89,13 +86,10 @@ router.get('/mi-resena/:turnoId', authMiddleware('PACIENTE'), asyncHandler(async
 
 // GET /api/resenas/mis-resenas — profesional ve todas sus reseñas
 router.get('/mis-resenas', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
-  const { page = '1', limit = '20', rating } = req.query;
-  const p = Math.max(1, Number(page));
-  const l = Math.min(50, Number(limit));
-  const skip = (p - 1) * l;
+  const { rating } = req.query;
+  const { page: p, limit: l, skip } = parsePagination(req, { limit: 20 });
 
   const where: any = { profesionalId: profesional.id };
   if (rating && Number(rating) >= 1 && Number(rating) <= 5) {
@@ -132,7 +126,7 @@ router.get('/mis-resenas', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 
   res.json(success({
     resenas,
-    pagination: { page: p, limit: l, total, totalPages: Math.ceil(total / l) },
+    pagination: buildPaginationMeta(p, l, total),
     stats: {
       promedio: aggregate._avg.rating ? Number(aggregate._avg.rating.toFixed(1)) : null,
       total: aggregate._count.rating,
@@ -149,8 +143,7 @@ router.patch('/:id/respuesta', authMiddleware('PROFESIONAL'), asyncHandler(async
     throw new AppError(400, 'VALIDATION_ERROR', 'La respuesta debe tener entre 5 y 2000 caracteres');
   }
 
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const resena = await prisma.resena.findUnique({ where: { id: req.params.id } });
   if (!resena) throw new AppError(404, 'NOT_FOUND', 'Reseña no encontrada');
@@ -167,8 +160,7 @@ router.patch('/:id/respuesta', authMiddleware('PROFESIONAL'), asyncHandler(async
 
 // DELETE /api/resenas/:id/respuesta — profesional borra su respuesta
 router.delete('/:id/respuesta', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   const resena = await prisma.resena.findUnique({ where: { id: req.params.id } });
   if (!resena) throw new AppError(404, 'NOT_FOUND', 'Reseña no encontrada');

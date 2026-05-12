@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
+import { findProfesionalByUserId } from '../utils/auth-helpers';
 
 const router = Router();
 
@@ -43,6 +44,14 @@ router.get('/me', authMiddleware('CLINICA'), asyncHandler(async (req: AuthReques
 router.put('/me', authMiddleware('CLINICA'), asyncHandler(async (req: AuthRequest, res) => {
   const clinica = await getClinicaOrFail(req.user!.userId);
   const { nombre, descripcion, logoUrl, direccion, telefono, website } = req.body;
+
+  if (nombre !== undefined && (!nombre || !nombre.trim())) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El nombre no puede estar vacío');
+  }
+
+  if (telefono !== undefined && telefono !== null && !/^[\d\s\-\+\(\)]{8,20}$/.test(telefono)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El teléfono tiene un formato inválido');
+  }
 
   const updated = await prisma.clinica.update({
     where: { id: clinica.id },
@@ -246,8 +255,7 @@ router.post('/invitaciones/:token/aceptar', authMiddleware('PROFESIONAL'), async
     throw new AppError(403, 'FORBIDDEN', 'Esta invitación no corresponde a tu email');
   }
 
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!profesional) throw new AppError(404, 'NOT_FOUND', 'Perfil de profesional no encontrado');
+  const profesional = await findProfesionalByUserId(req.user!.userId);
 
   await prisma.$transaction([
     prisma.profesional.update({ where: { id: profesional.id }, data: { clinicaId: inv.clinicaId } }),

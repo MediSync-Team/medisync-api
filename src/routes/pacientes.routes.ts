@@ -2,6 +2,7 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { findPacienteByUserId, findProfesionalByUserId } from '../utils/auth-helpers';
 
 const router = Router();
 
@@ -18,13 +19,7 @@ const CLINICAL_HISTORY_FIELDS = [
 type ClinicalHistoryField = typeof CLINICAL_HISTORY_FIELDS[number];
 
 async function assertProfessionalPatientAccess(userId: string, pacienteId: string) {
-  const profesional = await prisma.profesional.findUnique({
-    where: { usuarioId: userId },
-  });
-
-  if (!profesional) {
-    throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
-  }
+  const profesional = await findProfesionalByUserId(userId);
 
   const paciente = await prisma.paciente.findUnique({
     where: { id: pacienteId },
@@ -64,13 +59,7 @@ router.put('/perfil', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthR
     throw new AppError(400, 'VALIDATION_ERROR', 'El género debe ser MASCULINO, FEMENINO, OTRO o NO_ESPECIFICADO');
   }
 
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const updated = await prisma.paciente.update({
     where: { id: paciente.id },
@@ -90,13 +79,7 @@ router.put('/perfil', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthR
 }));
 
 router.get('/perfil', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({
-    where: { usuarioId: req.user!.userId },
-  });
-
-  if (!paciente) {
-    throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
-  }
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   res.json(success(paciente));
 }));
@@ -234,8 +217,7 @@ router.put('/:id/historia-clinica', authMiddleware('PROFESIONAL'), asyncHandler(
 }));
 
 router.get('/mis-recetas', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const turnos = await prisma.turno.findMany({
     where: {
@@ -275,8 +257,7 @@ router.get('/mis-recetas', authMiddleware('PACIENTE'), asyncHandler(async (req: 
 }));
 
 router.get('/mis-certificados', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const turnos = await prisma.turno.findMany({
     where: {
@@ -313,8 +294,7 @@ router.get('/mis-certificados', authMiddleware('PACIENTE'), asyncHandler(async (
 }));
 
 router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const paciente = await prisma.paciente.findUnique({ where: { usuarioId: req.user!.userId } });
-  if (!paciente) throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
+  const paciente = await findPacienteByUserId(req.user!.userId);
 
   const ahora = new Date();
   const hace12Meses = new Date(ahora.getFullYear() - 1, ahora.getMonth(), 1);

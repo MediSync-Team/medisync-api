@@ -2,13 +2,9 @@ import { Router } from 'express';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 
 const router = Router();
-
-async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
-  return profesional?.id || null;
-}
 
 // GET /suscripciones/estado — get subscription status for professional
 router.get(

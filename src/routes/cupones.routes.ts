@@ -1,15 +1,11 @@
 import { Router } from 'express';
 import { AuthRequest, authMiddleware } from '../middleware/auth.middleware';
-import { asyncHandler } from '../utils/response';
-import { AppError, success } from '../utils/response';
+import { asyncHandler, success, AppError } from '../utils/response';
 import prisma from '../lib/prisma';
+import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
+import { validateAndApplyCoupon } from '../utils/coupon';
 
 export const cuponesRouter = Router();
-
-async function getProfesionalIdByUsuario(usuarioId: string): Promise<string | null> {
-  const profesional = await prisma.profesional.findUnique({ where: { usuarioId } });
-  return profesional?.id || null;
-}
 
 // POST /cupones — create coupon (PROFESIONAL)
 cuponesRouter.post(
@@ -146,7 +142,6 @@ cuponesRouter.post(
       throw new AppError(400, 'VALIDATION_ERROR', 'codigo y turnoId son obligatorios');
     }
 
-    // Get turno with profesional and precio
     const turno = await prisma.turno.findUnique({
       where: { id: turnoId },
       include: { profesional: true },
@@ -155,43 +150,9 @@ cuponesRouter.post(
       throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
     }
 
-    const codigoUpper = codigo.toUpperCase();
-    const cupon = await prisma.cupon.findUnique({ where: { codigo: codigoUpper } });
+    const precioBase = Number(turno.profesional?.precioConsulta || 0);
+    const result = await validateAndApplyCoupon(codigo, turnoId, turno.profesionalId, precioBase);
 
-    if (!cupon) {
-      throw new AppError(400, 'INVALID_COUPON', 'El código de cupón no es válido');
-    }
-    if (!cupon.activo) {
-      throw new AppError(400, 'INACTIVE_COUPON', 'El cupón está inactivo');
-    }
-    if (cupon.profesionalId !== turno.profesionalId) {
-      throw new AppError(400, 'COUPON_NOT_FOR_PROFESSIONAL', 'El cupón no es válido para este profesional');
-    }
-    if (cupon.expiresAt && cupon.expiresAt < new Date()) {
-      throw new AppError(400, 'EXPIRED_COUPON', 'El cupón ha expirado');
-    }
-    if (cupon.maxUsos && cupon.usosActuales >= cupon.maxUsos) {
-      throw new AppError(400, 'COUPON_EXHAUSTED', 'El cupón ha alcanzado el máximo de usos');
-    }
-
-    // Calculate discount
-    const montoOriginal = parseFloat(String(turno.profesional?.precioConsulta || 0));
-    let montoDescuento = 0;
-    if (cupon.tipo === 'PORCENTAJE') {
-      montoDescuento = (montoOriginal * parseFloat(String(cupon.valor))) / 100;
-    } else {
-      montoDescuento = parseFloat(String(cupon.valor));
-    }
-    const montoFinal = Math.max(0, montoOriginal - montoDescuento);
-
-    res.json(success({
-      cuponId: cupon.id,
-      descripcion: cupon.descripcion,
-      tipo: cupon.tipo,
-      valor: cupon.valor,
-      montoOriginal,
-      montoDescuento,
-      montoFinal,
-    }));
+    res.json(success(result));
   })
 );
