@@ -118,7 +118,11 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
     whereClause.fechaHora = { gte: now };
     whereClause.estado = { in: ['RESERVADO', 'CONFIRMADO'] };
   } else if (tipo === 'pasados') {
-    whereClause.fechaHora = { lt: now };
+    whereClause.OR = [
+      { fechaHora: { lt: now } },
+      { estado: 'CANCELADO' },
+    ];
+    whereClause.estado = { notIn: ['RESERVADO', 'CONFIRMADO'] };
   }
 
   const { page, limit, skip } = parsePagination(req);

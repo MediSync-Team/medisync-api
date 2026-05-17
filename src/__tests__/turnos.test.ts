@@ -168,6 +168,24 @@ describe('Turnos Logic', () => {
       expect(past.length).toBe(2);
     });
 
+    it('should include cancelled future appointments in patient past appointments', () => {
+      const now = new Date();
+      const appointments = [
+        { fecha: new Date(now.getTime() - 86400000), estado: 'COMPLETADO' },
+        { fecha: new Date(now.getTime() + 86400000), estado: 'CANCELADO' },
+        { fecha: new Date(now.getTime() + 172800000), estado: 'RESERVADO' },
+        { fecha: new Date(now.getTime() + 259200000), estado: 'CONFIRMADO' },
+      ];
+
+      const pastForPatient = appointments.filter(a =>
+        !['RESERVADO', 'CONFIRMADO'].includes(a.estado) &&
+        (a.fecha < now || a.estado === 'CANCELADO')
+      );
+
+      expect(pastForPatient).toHaveLength(2);
+      expect(pastForPatient.map(a => a.estado)).toEqual(['COMPLETADO', 'CANCELADO']);
+    });
+
     it('should filter by modality', () => {
       const appointments = [
         { modalidad: 'VIRTUAL' },
