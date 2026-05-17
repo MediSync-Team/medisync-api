@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { EstadoTurno } from '@prisma/client';
-import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
@@ -21,7 +20,7 @@ import rateLimit from 'express-rate-limit';
 
 const router = Router();
 
-// Aggressive rate limiting for guest bookings (5 per minute)
+// Booking limiter kept for future guest booking; authenticated patients skip it.
 const bookingLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
@@ -29,7 +28,7 @@ const bookingLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiadas solicitudes de reserva. Intenta más tarde.' } },
   skip: (req: any) => {
-    // Don't rate limit authenticated pacientes
+    // Don't rate limit authenticated pacientes.
     return req.user?.rol === 'PACIENTE';
   },
 });
@@ -249,23 +248,25 @@ router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) 
 
 router.post(
   '/reservar',
+  authMiddleware('PACIENTE'),
   bookingLimiter,
   [
     body('profesionalId').isUUID(),
     body('fechaHora').isISO8601(),
     body('modalidad').isIn(['PRESENCIAL', 'VIRTUAL']),
-    body('paciente.email').optional().isEmail(),
-    body('paciente.nombre').optional().isLength({ min: 1, max: 100 }),
-    body('paciente.apellido').optional().isLength({ min: 1, max: 100 }),
   ],
   asyncHandler(async (req: AuthRequest, res) => {
     validateRequest(validationResult(req));
 
-    const { profesionalId, fechaHora, modalidad, paciente: pacienteData } = req.body;
+    const { profesionalId, fechaHora, modalidad } = req.body;
     const fechaHoraDate = new Date(fechaHora);
 
     if (Number.isNaN(fechaHoraDate.getTime()) || fechaHoraDate <= new Date()) {
       throw new AppError(400, 'VALIDATION_ERROR', 'La fecha del turno debe ser futura y valida');
+    }
+
+    if (fechaHoraDate.getMinutes() !== 0 && fechaHoraDate.getMinutes() !== 30) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
     }
 
     const profesional = await prisma.profesional.findUnique({ where: { id: profesionalId } });
@@ -273,7 +274,28 @@ router.post(
       throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
     }
 
-    // Check for bloqueo on this date/time
+    const paciente = await prisma.paciente.findUnique({
+      where: { usuarioId: req.user!.userId },
+    });
+    if (!paciente) {
+      throw new AppError(404, 'PACIENTE_NOT_FOUND', 'Paciente no encontrado');
+    }
+
+    const diaSemanaBooking = fechaHoraDate.getDay();
+    const horaBookingStr = `${String(fechaHoraDate.getHours()).padStart(2, '0')}:${String(fechaHoraDate.getMinutes()).padStart(2, '0')}`;
+    const dispSlots = await prisma.disponibilidad.findMany({
+      where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
+    });
+    const matchingDisp = dispSlots.find((disp) => {
+      const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidad;
+      const horarioOk = horaBookingStr >= disp.horaInicio && horaBookingStr < disp.horaFin;
+      return modalidadOk && horarioOk;
+    });
+
+    if (!matchingDisp) {
+      throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
+    }
+
     const slotDate = new Date(fechaHoraDate.getFullYear(), fechaHoraDate.getMonth(), fechaHoraDate.getDate());
     const bloqueos = await prisma.bloqueoDisponibilidad.findMany({
       where: {
@@ -284,7 +306,7 @@ router.post(
     });
     if (bloqueos.length > 0) {
       const slotMinutes = fechaHoraDate.getHours() * 60 + fechaHoraDate.getMinutes();
-      const bloqueado = bloqueos.some(b => {
+      const bloqueado = bloqueos.some((b) => {
         if (!b.horaInicio || !b.horaFin) return true; // full-day block
         const [bh, bm] = b.horaInicio.split(':').map(Number);
         const [eh, em] = b.horaFin.split(':').map(Number);
@@ -293,63 +315,7 @@ router.post(
       if (bloqueado) throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
     }
 
-    let pacienteId: string | null = null;
-
-    if (req.user?.rol === 'PACIENTE') {
-      const paciente = await prisma.paciente.findUnique({
-        where: { usuarioId: req.user.userId },
-      });
-      if (paciente) {
-        pacienteId = paciente.id;
-      }
-    } else if (pacienteData) {
-      const email = String(pacienteData.email || '').toLowerCase().trim();
-      if (!email) {
-        throw new AppError(400, 'VALIDATION_ERROR', 'Email de paciente requerido');
-      }
-
-      const existente = await prisma.paciente.findFirst({
-        where: { email },
-      });
-
-      if (existente) {
-        pacienteId = existente.id;
-      } else {
-        // For guest bookings, create a verification token and send confirmation email
-        const token = crypto.randomBytes(32).toString('hex');
-        await prisma.bookingVerification.create({
-          data: {
-            token,
-            email,
-            nombre: pacienteData.nombre || 'Guest',
-            apellido: pacienteData.apellido || 'User',
-            profesionalId,
-            fechaHora: fechaHoraDate,
-            modalidad,
-            telefonoPaciente: pacienteData.telefono,
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hour expiry
-          },
-        });
-
-        // Send confirmation email
-        const confirmUrl = `${process.env.FRONTEND_URL}/auth/confirmar-turno?token=${token}`;
-        sendNotification(['EMAIL'], {
-          event: 'BOOKING_CONFIRMATION',
-          title: 'Confirmá tu reserva de turno',
-          message: `Haz clic en el enlace para confirmar tu reserva. Este enlace vence en 24 horas.`,
-          userEmail: email,
-          meta: { confirmUrl, nombre: pacienteData.nombre },
-        }).catch((err) => console.error('[turnos] confirmation email error:', err));
-
-        res.status(202).json(success({
-          message: 'Verifica tu email para confirmar la reserva',
-          email,
-        }));
-        return;
-      }
-    }
-
-      // FREE plan turno limit check
+    // FREE plan turno limit check
     const prof = await prisma.profesional.findUnique({
       where: { id: profesionalId },
       select: { plan: true },
@@ -376,16 +342,9 @@ router.post(
         ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
         : null;
 
-    // Resolve location from the matching Disponibilidad slot, fall back to profile default
-    const diaSemanaBooking = fechaHoraDate.getDay();
-    const horaBookingStr = `${String(fechaHoraDate.getHours()).padStart(2, '0')}:${String(fechaHoraDate.getMinutes()).padStart(2, '0')}`;
-    const dispSlots = await prisma.disponibilidad.findMany({
-      where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
-    });
-    const matchingDisp = dispSlots.find(d => horaBookingStr >= d.horaInicio && horaBookingStr < d.horaFin);
     const lugarAtencionTurno = matchingDisp?.lugarAtencion ?? profesional.lugarAtencion ?? null;
 
-      const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const existingStart = fechaHoraDate.getTime();
       const existingEnd = existingStart + 30 * 60 * 1000; // 30 min slots
 
@@ -407,7 +366,7 @@ router.post(
       const turno = await tx.turno.create({
         data: {
           profesionalId,
-          pacienteId,
+          pacienteId: paciente.id,
           fechaHora: fechaHoraDate,
           modalidad,
           linkVideollamada,
@@ -419,23 +378,23 @@ router.post(
       return turno;
     });
 
-      const turnoConRelaciones = await prisma.turno.findUnique({
-        where: { id: result.id },
-        include: {
-          profesional: true,
-          paciente: true,
-        },
-      });
+    const turnoConRelaciones = await prisma.turno.findUnique({
+      where: { id: result.id },
+      include: {
+        profesional: true,
+        paciente: true,
+      },
+    });
 
-      if (turnoConRelaciones) {
-        if (turnoConRelaciones.pacienteId) {
-          await resolveWaitlistForBooking({
-            profesionalId: turnoConRelaciones.profesionalId,
-            pacienteId: turnoConRelaciones.pacienteId,
-            fechaHora: turnoConRelaciones.fechaHora,
-            modalidad: turnoConRelaciones.modalidad as 'PRESENCIAL' | 'VIRTUAL',
-          });
-        }
+    if (turnoConRelaciones) {
+      if (turnoConRelaciones.pacienteId) {
+        await resolveWaitlistForBooking({
+          profesionalId: turnoConRelaciones.profesionalId,
+          pacienteId: turnoConRelaciones.pacienteId,
+          fechaHora: turnoConRelaciones.fechaHora,
+          modalidad: turnoConRelaciones.modalidad as 'PRESENCIAL' | 'VIRTUAL',
+        });
+      }
 
         // Notificar al paciente
         if (turnoConRelaciones.paciente) {
