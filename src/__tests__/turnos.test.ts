@@ -184,6 +184,32 @@ describe('Turnos Logic', () => {
   });
 
   describe('Conflict detection', () => {
+    it('should ignore cancelled appointments when deciding whether a slot is bookable', () => {
+      const hasConflict = (
+        existingAppointments: { fecha: Date; duracionMin: number; estado: string }[],
+        newFecha: Date,
+        newDuracion: number = 30
+      ) => {
+        const newStart = newFecha.getTime();
+        const newEnd = newStart + newDuracion * 60000;
+
+        return existingAppointments
+          .filter((apt) => apt.estado !== 'CANCELADO')
+          .some(apt => {
+            const aptStart = apt.fecha.getTime();
+            const aptEnd = aptStart + apt.duracionMin * 60000;
+            return newStart < aptEnd && newEnd > aptStart;
+          });
+      };
+
+      const existing = [
+        { fecha: new Date('2024-01-15T10:00:00'), duracionMin: 30, estado: 'CANCELADO' },
+      ];
+
+      expect(hasConflict(existing, new Date('2024-01-15T10:00:00'))).toBe(false);
+      expect(hasConflict([...existing, { fecha: new Date('2024-01-15T10:00:00'), duracionMin: 30, estado: 'RESERVADO' }], new Date('2024-01-15T10:00:00'))).toBe(true);
+    });
+
     it('should detect overlapping appointments', () => {
       const hasConflict = (
         existingAppointments: { fecha: Date; duracionMin: number }[],

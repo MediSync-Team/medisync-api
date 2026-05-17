@@ -312,7 +312,6 @@ model Turno {
   resena       Resena?
   chatMensajes ChatMensaje[]
 
-  @@unique([profesionalId, fechaHora])
   @@index([profesionalId, fechaHora])
   @@index([pacienteId])
   @@index([estado, fechaHora])
