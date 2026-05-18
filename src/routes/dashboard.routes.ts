@@ -4,19 +4,22 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
+import {
+  getClinicDayBoundsForInstant,
+  getClinicDateTimeParts,
+  getClinicMonthBounds,
+  CLINIC_TIME_ZONE
+} from '../utils/clinic-time';
 
 const router = Router();
 
 router.get('/dashboard', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const profesional = await findProfesionalByUserId(req.user!.userId);
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const now = new Date();
+  const { start: today, end: tomorrow } = getClinicDayBoundsForInstant(now);
+  const parts = getClinicDateTimeParts(now);
+  const { start: startOfMonth, end: endOfMonth } = getClinicMonthBounds(parts.year, parts.month);
 
   const [turnosHoy, proximosTurnos, stats] = await Promise.all([
     prisma.turno.count({
@@ -40,7 +43,7 @@ router.get('/dashboard', authMiddleware('PROFESIONAL'), asyncHandler(async (req:
       by: ['estado'],
       where: {
         profesionalId: profesional.id,
-        fechaHora: { gte: startOfMonth, lte: endOfMonth },
+        fechaHora: { gte: startOfMonth, lt: endOfMonth },
       },
       _count: true,
     }),
@@ -68,9 +71,16 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 
   const now = new Date();
   const mesesAtras = 6;
+  const parts = getClinicDateTimeParts(now);
 
   // Single aggregation query instead of N+1 findMany per month
-  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - mesesAtras + 1, 1);
+  let targetMonth = parts.month - mesesAtras + 1;
+  let targetYear = parts.year;
+  if (targetMonth <= 0) {
+    targetYear -= Math.ceil(Math.abs(targetMonth) / 12) || 1;
+    targetMonth = 12 + (targetMonth % 12);
+  }
+  const { start: sixMonthsAgo } = getClinicMonthBounds(targetYear, targetMonth);
 
   const [turnosPorEstado, pagosPorMes, totalTurnos, pacientesUnicos] = await Promise.all([
     // Group turnos by estado over the last 6 months
@@ -107,7 +117,7 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   const monthMap = new Map<string, { bruto: number; neto: number }>();
   for (const pago of pagosPorMes) {
     const fecha = pago.turno.fechaHora;
-    const key = fecha.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+    const key = fecha.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
     const entry = monthMap.get(key) ?? { bruto: 0, neto: 0 };
     entry.bruto += Number(pago.monto);
     entry.neto += Number(pago.montoNeto);
@@ -124,11 +134,16 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   const ingresosPorMes: { mes: string; bruto: number; neto: number }[] = [];
 
   for (let i = mesesAtras - 1; i >= 0; i--) {
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-    const mesNombre = startOfMonth.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+    let m = parts.month - i;
+    let y = parts.year;
+    if (m <= 0) {
+      y -= Math.ceil(Math.abs(m) / 12) || 1;
+      m = 12 + (m % 12);
+    }
+    const { start: startOfMonth, end: endOfMonth } = getClinicMonthBounds(y, m);
+    const mesNombre = startOfMonth.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
 
-    const monthTurnos = turnos6m.filter(t => t.fechaHora >= startOfMonth && t.fechaHora <= endOfMonth);
+    const monthTurnos = turnos6m.filter(t => t.fechaHora >= startOfMonth && t.fechaHora < endOfMonth);
 
     turnosPorMes.push({
       mes: mesNombre,
@@ -167,14 +182,24 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 
   // Build date range — default: last 12 months
   const now = new Date();
-  const defaultDesde = new Date(now.getFullYear(), now.getMonth() - 11, 1);
-  const fechaDesde = desde ? new Date(desde) : defaultDesde;
-  const fechaHasta = hasta ? new Date(hasta + 'T23:59:59') : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+  const parts = getClinicDateTimeParts(now);
+
+  let defaultDesdeMonth = parts.month - 11;
+  let defaultDesdeYear = parts.year;
+  if (defaultDesdeMonth <= 0) {
+    defaultDesdeYear -= Math.ceil(Math.abs(defaultDesdeMonth) / 12) || 1;
+    defaultDesdeMonth = 12 + (defaultDesdeMonth % 12);
+  }
+  const { start: defaultDesde } = getClinicMonthBounds(defaultDesdeYear, defaultDesdeMonth);
+  const { end: defaultHasta } = getClinicMonthBounds(parts.year, parts.month);
+
+  const fechaDesde = desde ? getClinicDayBoundsForInstant(new Date(desde + 'T12:00:00.000Z')).start : defaultDesde;
+  const fechaHasta = hasta ? getClinicDayBoundsForInstant(new Date(hasta + 'T12:00:00.000Z')).end : defaultHasta;
 
   const whereBase = {
     turno: {
       profesionalId: profesional.id,
-      fechaHora: { gte: fechaDesde, lte: fechaHasta },
+      fechaHora: { gte: fechaDesde, lt: fechaHasta },
     },
     ...(estado && estado !== 'TODOS' ? { estado: estado as any } : {}),
   };
@@ -210,12 +235,17 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 
   const mesesResumenMap = new Map<string, { bruto: number; neto: number; cantidad: number }>();
   for (let i = 11; i >= 0; i--) {
-    const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const end   = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-    const mesKey = start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+    let m = parts.month - i;
+    let y = parts.year;
+    if (m <= 0) {
+      y -= Math.ceil(Math.abs(m) / 12) || 1;
+      m = 12 + (m % 12);
+    }
+    const { start, end } = getClinicMonthBounds(y, m);
+    const mesKey = start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
     const monthPagos = pagosAll.filter(p => {
       const d = new Date(p.createdAt);
-      return d >= start && d <= end && p.estado === 'APROBADO';
+      return d >= start && d < end && p.estado === 'APROBADO';
     });
     mesesResumenMap.set(mesKey, {
       bruto:    monthPagos.reduce((s, p) => s + Number(p.monto), 0),
@@ -229,7 +259,7 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   // Totals for the filtered period
   const todosEnRango = await prisma.pago.findMany({
     where: {
-      turno: { profesionalId: profesional.id, fechaHora: { gte: fechaDesde, lte: fechaHasta } },
+      turno: { profesionalId: profesional.id, fechaHora: { gte: fechaDesde, lt: fechaHasta } },
     },
     select: { monto: true, montoNeto: true, estado: true },
   });

@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
-import { formatClinicDateKey, getClinicDayBoundsFromDateString } from '../utils/clinic-time';
+import { formatClinicDateKey, getClinicDayBoundsFromDateString, getClinicDayBoundsForInstant, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -83,11 +83,10 @@ router.get('/me/stats', authMiddleware('CLINICA'), asyncHandler(async (req: Auth
     return;
   }
 
-  const now   = new Date();
-  const hoyStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const hoyEnd   = new Date(hoyStart.getTime() + 86_400_000);
-  const mesStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const mesEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const now = new Date();
+  const { start: hoyStart, end: hoyEnd } = getClinicDayBoundsForInstant(now);
+  const parts = getClinicDateTimeParts(now);
+  const { start: mesStart, end: mesEnd } = getClinicMonthBounds(parts.year, parts.month);
 
   const [turnosHoy, turnosMes, cancelacionesMes, pagos, activos] = await Promise.all([
     prisma.turno.count({

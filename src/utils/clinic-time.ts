@@ -138,3 +138,13 @@ export function addDaysToClinicDate(date: string, days: number): string {
 export function formatClinicDateTimeEs(date: Date): string {
   return date.toLocaleString('es-AR', { timeZone: CLINIC_TIME_ZONE });
 }
+
+export function getClinicMonthBounds(year: number, month: number): { start: Date; end: Date } {
+  // month is 1-12
+  const start = new Date(Date.UTC(year, month - 1, 1, -CLINIC_UTC_OFFSET_MINUTES / 60, 0, 0, 0));
+  // to get the start of the next month:
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+  const end = new Date(Date.UTC(nextYear, nextMonth - 1, 1, -CLINIC_UTC_OFFSET_MINUTES / 60, 0, 0, 0));
+  return { start, end };
+}
