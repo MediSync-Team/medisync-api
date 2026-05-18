@@ -4,6 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
+import { formatClinicDateKey, getClinicDayBoundsFromDateString } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -126,8 +127,17 @@ router.get('/me/agenda', authMiddleware('CLINICA'), asyncHandler(async (req: Aut
   const clinica = await getClinicaOrFail(req.user!.userId);
 
   const fecha = req.query.fecha as string | undefined;
-  const dateStart = fecha ? new Date(`${fecha}T00:00:00`) : new Date(new Date().setHours(0, 0, 0, 0));
-  const dateEnd   = new Date(dateStart.getTime() + 86_400_000);
+  const fechaAgenda = fecha ?? formatClinicDateKey(new Date());
+  let dateStart: Date;
+  let dateEnd: Date;
+
+  try {
+    const bounds = getClinicDayBoundsFromDateString(fechaAgenda);
+    dateStart = bounds.start;
+    dateEnd = bounds.end;
+  } catch {
+    throw new AppError(400, 'VALIDATION_ERROR', 'fecha debe tener formato YYYY-MM-DD');
+  }
 
   const turnos = await prisma.turno.findMany({
     where: {
