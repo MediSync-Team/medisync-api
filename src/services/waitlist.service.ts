@@ -1,18 +1,9 @@
 import prisma from '../lib/prisma';
 import { sendNotification } from '../utils/notifications';
 import { createNotification } from './notification.service';
+import { CLINIC_TIME_ZONE, getClinicDayBoundsForInstant } from '../utils/clinic-time';
 
 const NOTIFY_EXPIRY_HOURS = 2;
-
-function getUtcDayBounds(date: Date) {
-  const start = new Date(date);
-  start.setUTCHours(0, 0, 0, 0);
-
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-
-  return { start, end };
-}
 
 export async function resolveWaitlistForBooking(params: {
   profesionalId: string;
@@ -20,7 +11,7 @@ export async function resolveWaitlistForBooking(params: {
   fechaHora: Date;
   modalidad: 'PRESENCIAL' | 'VIRTUAL';
 }) {
-  const { start, end } = getUtcDayBounds(params.fechaHora);
+  const { start, end } = getClinicDayBoundsForInstant(params.fechaHora);
 
   await prisma.listaEspera.updateMany({
     where: {
@@ -44,7 +35,7 @@ async function sendWaitlistNotification(params: {
   fechaHora: Date;
   modalidad: 'PRESENCIAL' | 'VIRTUAL';
 }) {
-  const { start, end } = getUtcDayBounds(params.fechaHora);
+  const { start, end } = getClinicDayBoundsForInstant(params.fechaHora);
 
   // Use a transaction with a row-level lock to atomically claim one entry,
   // preventing the TOCTOU race condition where two concurrent calls could
@@ -79,8 +70,8 @@ async function sendWaitlistNotification(params: {
 
   if (!candidato) return;
 
-  const fechaStr = params.fechaHora.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
-  const horaStr  = params.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  const fechaStr = params.fechaHora.toLocaleDateString('es-AR', { timeZone: CLINIC_TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long' });
+  const horaStr  = params.fechaHora.toLocaleTimeString('es-AR', { timeZone: CLINIC_TIME_ZONE, hour: '2-digit', minute: '2-digit' });
   const profNombre = `Dr/a. ${candidato.profesional.nombre} ${candidato.profesional.apellido}`;
   const profileUrl = `/profesional/${params.profesionalId}`;
 

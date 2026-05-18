@@ -37,9 +37,3 @@ export function hasAppointmentConflict(
 ): boolean {
   return appointments.some((appointment) => appointmentOverlapsSlot(appointment, slotStart, slotDurationMin));
 }
-
-export function getLocalDayBounds(date: Date) {
-  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
-  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
-  return { start, end };
-}

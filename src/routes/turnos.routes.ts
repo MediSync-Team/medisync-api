@@ -16,7 +16,16 @@ import {
 import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, getLocalDayBounds, hasAppointmentConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict } from '../utils/appointment-conflicts';
+import {
+  clinicDateTimeToUtcDate,
+  formatClinicDateTimeEs,
+  getClinicDateOnlyUtc,
+  getClinicDateTimeParts,
+  getClinicDayBoundsFromDateString,
+  getClinicDayBoundsForInstant,
+  getClinicWeekdayFromDateString,
+} from '../utils/clinic-time';
 import rateLimit from 'express-rate-limit';
 
 const router = Router();
@@ -176,20 +185,21 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
 router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (req, res) => {
   const { fecha, modalidad } = req.query;
   const fechaStr = String(fecha);
-  const [year, month, day] = fechaStr.split('-').map(Number);
-  const fechaDate = new Date(year, month - 1, day);
-  const diaSemana = fechaDate.getDay();
+  if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
+  }
+  const diaSemana = getClinicWeekdayFromDateString(fechaStr);
 
   const disponibilidad = await prisma.disponibilidad.findMany({
     where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
   });
 
-  const { start: startOfDay, end: endOfDay } = getLocalDayBounds(fechaDate);
+  const { start: startOfDay, end: endOfDay } = getClinicDayBoundsFromDateString(fechaStr);
 
   const turnosOcupados = await prisma.turno.findMany({
     where: {
       profesionalId: req.params.profesionalId,
-      fechaHora: { gte: startOfDay, lte: endOfDay },
+      fechaHora: { gte: startOfDay, lt: endOfDay },
       estado: { notIn: ['CANCELADO'] },
     },
   });
@@ -204,7 +214,7 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
 
     while (h < hf || (h === hf && m < mf)) {
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
+      const slotDate = clinicDateTimeToUtcDate(fechaStr, horaStr);
 
       const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
       if (!slotsMap.has(horaStr)) {
@@ -265,7 +275,9 @@ router.post(
       throw new AppError(400, 'VALIDATION_ERROR', 'La fecha del turno debe ser futura y valida');
     }
 
-    if (fechaHoraDate.getMinutes() !== 0 && fechaHoraDate.getMinutes() !== 30) {
+    const clinicParts = getClinicDateTimeParts(fechaHoraDate);
+
+    if (clinicParts.minute !== 0 && clinicParts.minute !== 30) {
       throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
     }
 
@@ -281,8 +293,8 @@ router.post(
       throw new AppError(404, 'PACIENTE_NOT_FOUND', 'Paciente no encontrado');
     }
 
-    const diaSemanaBooking = fechaHoraDate.getDay();
-    const horaBookingStr = `${String(fechaHoraDate.getHours()).padStart(2, '0')}:${String(fechaHoraDate.getMinutes()).padStart(2, '0')}`;
+    const diaSemanaBooking = clinicParts.weekday;
+    const horaBookingStr = clinicParts.timeKey;
     const dispSlots = await prisma.disponibilidad.findMany({
       where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
     });
@@ -296,7 +308,7 @@ router.post(
       throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
     }
 
-    const slotDate = new Date(fechaHoraDate.getFullYear(), fechaHoraDate.getMonth(), fechaHoraDate.getDate());
+    const slotDate = getClinicDateOnlyUtc(clinicParts.dateKey);
     const bloqueos = await prisma.bloqueoDisponibilidad.findMany({
       where: {
         profesionalId,
@@ -305,7 +317,7 @@ router.post(
       },
     });
     if (bloqueos.length > 0) {
-      const slotMinutes = fechaHoraDate.getHours() * 60 + fechaHoraDate.getMinutes();
+      const slotMinutes = clinicParts.hour * 60 + clinicParts.minute;
       const bloqueado = bloqueos.some((b) => {
         if (!b.horaInicio || !b.horaFin) return true; // full-day block
         const [bh, bm] = b.horaInicio.split(':').map(Number);
@@ -347,11 +359,11 @@ router.post(
     let result;
     try {
       result = await prisma.$transaction(async (tx) => {
-        const { start, end } = getLocalDayBounds(fechaHoraDate);
+        const { start, end } = getClinicDayBoundsForInstant(fechaHoraDate);
         const turnosDelDia = await tx.turno.findMany({
           where: {
             profesionalId,
-            fechaHora: { gte: start, lte: end },
+            fechaHora: { gte: start, lt: end },
             estado: { notIn: ['CANCELADO'] },
           },
           select: { fechaHora: true, duracionMin: true, estado: true },
@@ -425,7 +437,7 @@ router.post(
             usuarioId: turnoConRelaciones.paciente.usuarioId,
             tipo: 'TURNO_RESERVADO',
             titulo: 'Turno reservado',
-            cuerpo: `Tu turno con Dr/a. ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido} fue reservado para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            cuerpo: `Tu turno con Dr/a. ${turnoConRelaciones.profesional.nombre} ${turnoConRelaciones.profesional.apellido} fue reservado para el ${formatClinicDateTimeEs(turnoConRelaciones.fechaHora)}.`,
             link: '/dashboard/paciente',
           });
         }
@@ -443,7 +455,7 @@ router.post(
           await sendNotification(profChannels, {
             event: 'TURNO_RESERVADO',
             title: 'Nuevo turno reservado',
-            message: `${pacNombre} reservó un turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            message: `${pacNombre} reservó un turno para el ${formatClinicDateTimeEs(turnoConRelaciones.fechaHora)}.`,
             userEmail: profUsuario?.email,
             userPhone: turnoConRelaciones.profesional.telefono || undefined,
             meta: {
@@ -457,7 +469,7 @@ router.post(
             usuarioId: turnoConRelaciones.profesional.usuarioId,
             tipo: 'TURNO_RESERVADO',
             titulo: 'Nuevo turno',
-            cuerpo: `${pacNombre} reservó un turno para el ${turnoConRelaciones.fechaHora.toLocaleString('es-AR')}.`,
+            cuerpo: `${pacNombre} reservó un turno para el ${formatClinicDateTimeEs(turnoConRelaciones.fechaHora)}.`,
             link: '/dashboard',
           });
         }
@@ -482,7 +494,9 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     throw new AppError(400, 'VALIDATION_ERROR', 'La nueva fecha debe ser futura y valida');
   }
 
-  if (nuevaFechaHora.getMinutes() !== 0 && nuevaFechaHora.getMinutes() !== 30) {
+  const nuevaClinicParts = getClinicDateTimeParts(nuevaFechaHora);
+
+  if (nuevaClinicParts.minute !== 0 && nuevaClinicParts.minute !== 30) {
     throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
   }
 
@@ -511,8 +525,8 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   }
 
   const modalidadFinal = nuevaModalidad || turno.modalidad;
-  const diaSemana = nuevaFechaHora.getDay();
-  const horaStr = `${String(nuevaFechaHora.getHours()).padStart(2, '0')}:${String(nuevaFechaHora.getMinutes()).padStart(2, '0')}`;
+  const diaSemana = nuevaClinicParts.weekday;
+  const horaStr = nuevaClinicParts.timeKey;
 
   const disponibilidades = await prisma.disponibilidad.findMany({
     where: {
@@ -538,12 +552,12 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   const nuevaLugarAtencion = matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null;
 
   const turnoActualizado = await prisma.$transaction(async (tx) => {
-    const { start, end } = getLocalDayBounds(nuevaFechaHora);
+    const { start, end } = getClinicDayBoundsForInstant(nuevaFechaHora);
     const turnosDelDia = await tx.turno.findMany({
       where: {
         id: { not: turno.id },
         profesionalId: turno.profesionalId,
-        fechaHora: { gte: start, lte: end },
+        fechaHora: { gte: start, lt: end },
         estado: { notIn: ['CANCELADO'] },
       },
       select: { fechaHora: true, duracionMin: true, estado: true },
@@ -582,7 +596,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     await sendNotification(pacChannels, {
       event: 'TURNO_REPROGRAMADO',
       title: 'Turno reprogramado',
-      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue reprogramado para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      message: `Tu turno con ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} fue reprogramado para el ${formatClinicDateTimeEs(nuevaFechaHora)}.`,
       userEmail: pac.email,
       userPhone: pac.telefono ?? undefined,
       meta: {
@@ -599,7 +613,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
         usuarioId: pac.usuario.id,
         tipo: 'TURNO_REPROGRAMADO',
         titulo: 'Turno reprogramado',
-        cuerpo: `${who} reprogramó tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+        cuerpo: `${who} reprogramó tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} para el ${formatClinicDateTimeEs(nuevaFechaHora)}.`,
         link: '/dashboard/paciente',
       });
     }
@@ -618,7 +632,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     await sendNotification(profChannels, {
       event: 'TURNO_REPROGRAMADO',
       title: 'Turno reprogramado por el paciente',
-      message: `${pacNombre} reprogramó su turno para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      message: `${pacNombre} reprogramó su turno para el ${formatClinicDateTimeEs(nuevaFechaHora)}.`,
       userEmail: profUsuario?.email,
       userPhone: turnoActualizado.profesional.telefono || undefined,
       meta: {
@@ -632,7 +646,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
       usuarioId: turnoActualizado.profesional.usuarioId,
       tipo: 'TURNO_REPROGRAMADO',
       titulo: 'Turno reprogramado',
-      cuerpo: `${pacNombre} reprogramó su turno para el ${nuevaFechaHora.toLocaleString('es-AR')}.`,
+      cuerpo: `${pacNombre} reprogramó su turno para el ${formatClinicDateTimeEs(nuevaFechaHora)}.`,
       link: '/dashboard',
     });
   }
@@ -698,7 +712,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
       await sendNotification(pacChannels, {
         event: 'TURNO_CANCELADO',
         title: 'Turno cancelado',
-        message: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
+        message: `Tu turno del ${formatClinicDateTimeEs(turnoActualizado.fechaHora)} fue cancelado.`,
         userEmail: turnoActualizado.paciente.email,
         userPhone: turnoActualizado.paciente.telefono ?? undefined,
         meta: metaBase,
@@ -707,7 +721,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
         usuarioId: turnoActualizado.paciente.usuarioId,
         tipo: 'TURNO_CANCELADO',
         titulo: 'Turno cancelado',
-        cuerpo: `Tu turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue cancelado.`,
+        cuerpo: `Tu turno del ${formatClinicDateTimeEs(turnoActualizado.fechaHora)} fue cancelado.`,
         link: '/dashboard/paciente',
       });
     }
@@ -725,7 +739,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
       await sendNotification(profChannels, {
         event: 'TURNO_CANCELADO',
         title: 'Turno cancelado por el paciente',
-        message: `${pacNombre} canceló su turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
+        message: `${pacNombre} canceló su turno del ${formatClinicDateTimeEs(turnoActualizado.fechaHora)}.`,
         userEmail: profUsuario?.email,
         userPhone: turnoActualizado.profesional.telefono || undefined,
         meta: { ...metaBase, paciente: pacNombre },
@@ -734,7 +748,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
         usuarioId: turnoActualizado.profesional.usuarioId,
         tipo: 'TURNO_CANCELADO',
         titulo: 'Turno cancelado',
-        cuerpo: `${pacNombre} canceló su turno del ${turnoActualizado.fechaHora.toLocaleString('es-AR')}.`,
+        cuerpo: `${pacNombre} canceló su turno del ${formatClinicDateTimeEs(turnoActualizado.fechaHora)}.`,
         link: '/dashboard',
       });
     }
@@ -775,7 +789,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
       usuarioId: turnoActualizado.paciente.usuarioId,
       tipo: 'TURNO_CONFIRMADO',
       titulo: 'Turno confirmado',
-      cuerpo: `Tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} del ${turnoActualizado.fechaHora.toLocaleString('es-AR')} fue confirmado.`,
+      cuerpo: `Tu turno con Dr/a. ${turnoActualizado.profesional.nombre} ${turnoActualizado.profesional.apellido} del ${formatClinicDateTimeEs(turnoActualizado.fechaHora)} fue confirmado.`,
       link: '/dashboard/paciente',
     });
   }
@@ -1191,11 +1205,11 @@ router.post('/confirmar-reserva', [
     : null;
 
   const turno = await prisma.$transaction(async (tx) => {
-    const { start, end } = getLocalDayBounds(verification.fechaHora);
+    const { start, end } = getClinicDayBoundsForInstant(verification.fechaHora);
     const turnosDelDia = await tx.turno.findMany({
       where: {
         profesionalId: verification.profesionalId,
-        fechaHora: { gte: start, lte: end },
+        fechaHora: { gte: start, lt: end },
         estado: { notIn: ['CANCELADO'] },
       },
       select: { fechaHora: true, duracionMin: true, estado: true },

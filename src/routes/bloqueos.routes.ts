@@ -5,24 +5,35 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { createNotification } from '../services/notification.service';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
+import {
+  clinicDateTimeToUtcDate,
+  formatClinicDateKey,
+  formatClinicDateTimeEs,
+  getClinicDateOnlyUtc,
+  getClinicDayBoundsFromDateString,
+} from '../utils/clinic-time';
 
 const router = Router();
 
-function buildBlockRange(inicio: Date, fin: Date, horaInicio?: string | null, horaFin?: string | null) {
-  const start = new Date(inicio);
-  const end = new Date(fin);
-  if (horaInicio) {
-    const [h, m] = horaInicio.split(':').map(Number);
-    start.setUTCHours(h, m, 0, 0);
-  } else {
-    start.setUTCHours(0, 0, 0, 0);
+function normalizeClinicDateInput(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Fechas inválidas');
   }
-  if (horaFin) {
-    const [h, m] = horaFin.split(':').map(Number);
-    end.setUTCHours(h, m, 59, 999);
-  } else {
-    end.setUTCHours(23, 59, 59, 999);
+  return formatClinicDateKey(parsed);
+}
+
+function buildBlockRange(inicio: string, fin: string, horaInicio?: string | null, horaFin?: string | null) {
+  if (horaInicio && horaFin) {
+    return {
+      start: clinicDateTimeToUtcDate(inicio, horaInicio),
+      end: clinicDateTimeToUtcDate(fin, horaFin),
+    };
   }
+
+  const start = getClinicDayBoundsFromDateString(inicio).start;
+  const end = getClinicDayBoundsFromDateString(fin).end;
   return { start, end };
 }
 
@@ -33,8 +44,7 @@ router.get('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequ
   const { soloFuturos = 'true' } = req.query;
   const where: any = { profesionalId: profesional.id };
   if (soloFuturos === 'true') {
-    const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
+    const hoy = getClinicDayBoundsFromDateString(formatClinicDateKey(new Date())).start;
     where.fechaFin = { gte: hoy };
   }
 
@@ -54,12 +64,11 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
     throw new AppError(400, 'VALIDATION_ERROR', 'fechaInicio y fechaFin son requeridos');
   }
 
-  const inicio = new Date(fechaInicio);
-  const fin = new Date(fechaFin);
-  if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Fechas inválidas');
-  }
-  if (fin < inicio) {
+  const inicioKey = normalizeClinicDateInput(String(fechaInicio));
+  const finKey = normalizeClinicDateInput(String(fechaFin));
+  const inicio = getClinicDateOnlyUtc(inicioKey);
+  const fin = getClinicDateOnlyUtc(finKey);
+  if (finKey < inicioKey) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fechaFin debe ser mayor o igual a fechaInicio');
   }
 
@@ -74,7 +83,7 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
       throw new AppError(400, 'VALIDATION_ERROR', 'horaInicio debe ser menor a horaFin');
     }
     // Partial-day bloqueo only supports single-day
-    if (inicio.toDateString() !== fin.toDateString()) {
+    if (inicioKey !== finKey) {
       throw new AppError(400, 'VALIDATION_ERROR', 'El bloqueo parcial por hora solo puede aplicarse a un único día');
     }
   }
@@ -93,13 +102,13 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
       },
     });
 
-    const { start, end } = buildBlockRange(inicio, fin, horaInicio, horaFin);
+    const { start, end } = buildBlockRange(inicioKey, finKey, horaInicio, horaFin);
 
     const turnosAfectados = await tx.turno.findMany({
       where: {
         profesionalId: profesional.id,
         estado: { in: ['RESERVADO', 'CONFIRMADO'] },
-        fechaHora: { gte: start, lte: end },
+        fechaHora: { gte: start, lt: end },
       },
       include: { paciente: true, profesional: { include: { usuario: true } } },
     });
@@ -149,7 +158,7 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
     sendNotification(channels, {
       event: 'TURNO_CANCELADO',
       title: 'Turno cancelado',
-      message: `Tu turno del ${turno.fechaHora.toLocaleString('es-AR')} fue cancelado porque el profesional bloqueó esa agenda${motivo ? ': ' + motivo : ''}.`,
+      message: `Tu turno del ${formatClinicDateTimeEs(turno.fechaHora)} fue cancelado porque el profesional bloqueó esa agenda${motivo ? ': ' + motivo : ''}.`,
       userEmail: turno.paciente.email,
       meta: { turnoId: turno.id },
     }).catch(() => {});
@@ -158,7 +167,7 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
       usuarioId: turno.paciente.usuarioId,
       tipo: 'TURNO_CANCELADO',
       titulo: 'Turno cancelado',
-      cuerpo: `Tu turno del ${turno.fechaHora.toLocaleString('es-AR')} fue cancelado. Razón: ${motivo || 'bloqueo de agenda'}.`,
+      cuerpo: `Tu turno del ${formatClinicDateTimeEs(turno.fechaHora)} fue cancelado. Razón: ${motivo || 'bloqueo de agenda'}.`,
       link: '/dashboard/paciente',
     }).catch(() => {});
   }
@@ -194,8 +203,7 @@ router.get('/profesional/:profesionalId', asyncHandler(async (req, res) => {
   const { fecha } = req.query;
   if (!fecha) throw new AppError(400, 'VALIDATION_ERROR', 'fecha requerida');
 
-  const [y, m, d] = String(fecha).split('-').map(Number);
-  const fechaDate = new Date(y, m - 1, d);
+  const fechaDate = getClinicDateOnlyUtc(String(fecha));
 
   const bloqueos = await prisma.bloqueoDisponibilidad.findMany({
     where: {

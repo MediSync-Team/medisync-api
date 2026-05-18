@@ -75,6 +75,7 @@ jest.mock('../utils/auth-helpers', () => ({
 }));
 
 import { turnosRouter } from '../routes/turnos.routes';
+import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getClinicDateTimeParts } from '../utils/clinic-time';
 
 const profesionalId = '11111111-1111-4111-8111-111111111111';
 const pacienteUsuarioId = '22222222-2222-4222-8222-222222222222';
@@ -102,10 +103,8 @@ function tokenFor(rol: 'PACIENTE' | 'PROFESIONAL' | 'ADMIN' | 'CLINICA') {
 }
 
 function futureSlot(hours = 10, minutes = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + 7);
-  date.setHours(hours, minutes, 0, 0);
-  return date;
+  const dateKey = addDaysToClinicDate(formatClinicDateKey(new Date()), 7);
+  return clinicDateTimeToUtcDate(dateKey, `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`);
 }
 
 function bookingPayload(date = futureSlot(), modalidad: 'PRESENCIAL' | 'VIRTUAL' = 'PRESENCIAL') {
@@ -146,7 +145,7 @@ function setHappyPathMocks(date = futureSlot()) {
       horaFin: '12:00',
       modalidad: 'AMBOS',
       lugarAtencion: 'Consultorio disponibilidad',
-      diaSemana: date.getDay(),
+      diaSemana: getClinicDateTimeParts(date).weekday,
       activo: true,
     },
   ]);
@@ -428,6 +427,35 @@ describe('POST /turnos/reservar', () => {
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
   });
 
+  it('validates late-night slots using Argentina weekday and clock time', async () => {
+    const date = futureSlot(23, 30);
+    setHappyPathMocks(date);
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '23:00',
+        horaFin: '23:59',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio nocturno',
+        diaSemana: getClinicDateTimeParts(date).weekday,
+        activo: true,
+      },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        fechaHora: date,
+        lugarAtencion: 'Consultorio nocturno',
+      }),
+    }));
+  });
+
   it('creates a valid authenticated patient booking with linkPago null', async () => {
     const date = futureSlot(10, 0);
     setHappyPathMocks(date);
@@ -463,7 +491,7 @@ describe('POST /turnos/reservar', () => {
       },
     ]);
     mockPrisma.turno.findMany.mockResolvedValue([
-      { fechaHora: new Date(2026, 4, 18, 9, 30, 0, 0), duracionMin: 60, estado: 'RESERVADO' },
+      { fechaHora: clinicDateTimeToUtcDate('2026-05-18', '09:30'), duracionMin: 60, estado: 'RESERVADO' },
     ]);
 
     const res = await request(app)

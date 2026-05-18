@@ -5,6 +5,14 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { hasAppointmentConflict } from '../utils/appointment-conflicts';
+import {
+  addDaysToClinicDate,
+  clinicDateTimeToUtcDate,
+  formatClinicDateKey,
+  getClinicDateOnlyUtc,
+  getClinicDayBoundsFromDateString,
+  getClinicWeekdayFromDateString,
+} from '../utils/clinic-time';
 
 const router = Router();
 
@@ -52,8 +60,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
   // Filter by fecha: convert to diaSemana and require availability on that day
   if (fecha) {
-    const [year, month, day] = String(fecha).split('-').map(Number);
-    const diaSemana = new Date(year, month - 1, day).getDay();
+    const diaSemana = getClinicWeekdayFromDateString(String(fecha));
     const dispFilter = { some: { activo: true, diaSemana } };
     if (where.disponibilidades) {
       where.disponibilidades = { some: { activo: true, diaSemana, modalidad: where.disponibilidades.some.modalidad } };
@@ -64,8 +71,8 @@ router.get('/', asyncHandler(async (req, res) => {
 
   // When filtering by real-time availability we pre-require availability for at least one day this week
   if (filterDisponible && !fecha) {
-    const hoy = new Date();
-    const diasSemana = Array.from({ length: 7 }, (_, i) => new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i).getDay());
+    const hoy = formatClinicDateKey(new Date());
+    const diasSemana = Array.from({ length: 7 }, (_, i) => getClinicWeekdayFromDateString(addDaysToClinicDate(hoy, i)));
     const uniqueDias = [...new Set(diasSemana)];
     if (where.disponibilidades) {
       // merge: keep other conditions but also require a diaSemana match
@@ -127,15 +134,15 @@ router.get('/', asyncHandler(async (req, res) => {
 
   // ── Real-time slot availability filter ─────────────────────────────────────
   if (filterDisponible) {
-    const hoy = new Date();
+    const hoy = formatClinicDateKey(new Date());
     // Next 7 calendar days (today inclusive), each with its exact date and diaSemana
     const semana = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i);
-      return { fecha: d, diaSemana: d.getDay() };
+      const fecha = addDaysToClinicDate(hoy, i);
+      return { fecha, diaSemana: getClinicWeekdayFromDateString(fecha) };
     });
 
-    const inicioSemana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0, 0);
-    const finSemana    = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 6, 23, 59, 59, 999);
+    const inicioSemana = getClinicDayBoundsFromDateString(hoy).start;
+    const finSemana = getClinicDayBoundsFromDateString(addDaysToClinicDate(hoy, 7)).start;
 
     // Calculate weekly slot capacity per profesional from disponibilidades
     const capacidadPorProf = new Map<string, number>();
@@ -157,7 +164,7 @@ router.get('/', asyncHandler(async (req, res) => {
       by: ['profesionalId'],
       where: {
         profesionalId: { in: ids },
-        fechaHora: { gte: inicioSemana, lte: finSemana },
+        fechaHora: { gte: inicioSemana, lt: finSemana },
         estado: { notIn: ['CANCELADO'] },
       },
       _count: { id: true },
@@ -373,9 +380,9 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
   }
-  const [year, month, day] = fecha.split('-').map(Number);
-  const fechaDate = new Date(year, month - 1, day);
-  const diaSemana = fechaDate.getDay();
+  const diaSemana = getClinicWeekdayFromDateString(fecha);
+  const fechaDate = getClinicDateOnlyUtc(fecha);
+  const { start: startOfDay, end: endOfDay } = getClinicDayBoundsFromDateString(fecha);
 
   const [disponibilidad, turnosOcupados, bloqueos] = await Promise.all([
     prisma.disponibilidad.findMany({
@@ -384,7 +391,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
     prisma.turno.findMany({
       where: {
         profesionalId: req.params.id,
-        fechaHora: { gte: new Date(year, month - 1, day, 0, 0, 0, 0), lte: new Date(year, month - 1, day, 23, 59, 59, 999) },
+        fechaHora: { gte: startOfDay, lt: endOfDay },
         estado: { notIn: ['CANCELADO'] },
       },
     }),
@@ -411,7 +418,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
 
       while (h < hf || (h === hf && m < mf)) {
         const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-        const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
+        const slotDate = clinicDateTimeToUtcDate(fecha, horaStr);
         const slotMinutes = h * 60 + m;
 
         const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
