@@ -1,3 +1,5 @@
+import { hasAppointmentConflict } from '../utils/appointment-conflicts';
+
 describe('Turnos Logic', () => {
   describe('Slot availability calculation', () => {
     it('should generate correct slots from availability', () => {
@@ -202,6 +204,34 @@ describe('Turnos Logic', () => {
   });
 
   describe('Conflict detection', () => {
+    it('should block an appointment with the same interval', () => {
+      const existing = [{ fechaHora: new Date('2026-05-18T10:00:00'), duracionMin: 30, estado: 'RESERVADO' }];
+
+      expect(hasAppointmentConflict(existing, new Date('2026-05-18T10:00:00'), 30)).toBe(true);
+    });
+
+    it('should not block adjacent 30-minute slots', () => {
+      const existingAtTen = [{ fechaHora: new Date('2026-05-18T10:00:00'), duracionMin: 30, estado: 'RESERVADO' }];
+      const existingAtTenThirty = [{ fechaHora: new Date('2026-05-18T10:30:00'), duracionMin: 30, estado: 'RESERVADO' }];
+
+      expect(hasAppointmentConflict(existingAtTen, new Date('2026-05-18T10:30:00'), 30)).toBe(false);
+      expect(hasAppointmentConflict(existingAtTenThirty, new Date('2026-05-18T10:00:00'), 30)).toBe(false);
+    });
+
+    it('should block real overlaps with longer appointments', () => {
+      const existingLong = [{ fechaHora: new Date('2026-05-18T10:00:00'), duracionMin: 60, estado: 'RESERVADO' }];
+      const existingLater = [{ fechaHora: new Date('2026-05-18T10:30:00'), duracionMin: 30, estado: 'RESERVADO' }];
+
+      expect(hasAppointmentConflict(existingLong, new Date('2026-05-18T10:30:00'), 30)).toBe(true);
+      expect(hasAppointmentConflict(existingLater, new Date('2026-05-18T10:00:00'), 60)).toBe(true);
+    });
+
+    it('should ignore cancelled overlapping appointments', () => {
+      const cancelled = [{ fechaHora: new Date('2026-05-18T10:00:00'), duracionMin: 60, estado: 'CANCELADO' }];
+
+      expect(hasAppointmentConflict(cancelled, new Date('2026-05-18T10:30:00'), 30)).toBe(false);
+    });
+
     it('should ignore cancelled appointments when deciding whether a slot is bookable', () => {
       const hasConflict = (
         existingAppointments: { fecha: Date; duracionMin: number; estado: string }[],

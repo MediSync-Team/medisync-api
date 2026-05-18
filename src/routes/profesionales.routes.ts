@@ -4,6 +4,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
+import { hasAppointmentConflict } from '../utils/appointment-conflicts';
 
 const router = Router();
 
@@ -413,7 +414,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
         const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
         const slotMinutes = h * 60 + m;
 
-        const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
+        const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
 
         // Check if slot falls within a partial bloqueo
         const bloqueado = bloqueos.some(b => {

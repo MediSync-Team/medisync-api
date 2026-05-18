@@ -5,7 +5,7 @@ import { generateToken } from '../middleware/auth.middleware';
 
 const mockTx = {
   turno: {
-    findFirst: jest.fn() as any,
+    findMany: jest.fn() as any,
     create: jest.fn() as any,
   },
 };
@@ -25,6 +25,7 @@ const mockPrisma = {
   },
   turno: {
     count: jest.fn() as any,
+    findMany: jest.fn() as any,
     findUnique: jest.fn() as any,
   },
   usuario: {
@@ -151,7 +152,7 @@ function setHappyPathMocks(date = futureSlot()) {
   ]);
   mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([]);
   mockPrisma.turno.count.mockResolvedValue(0);
-  mockTx.turno.findFirst.mockResolvedValue(null);
+  mockTx.turno.findMany.mockResolvedValue([]);
   mockTx.turno.create.mockResolvedValue({
     id: 'turno-1',
     profesionalId,
@@ -206,9 +207,10 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.disponibilidad.findMany.mockReset();
     mockPrisma.bloqueoDisponibilidad.findMany.mockReset();
     mockPrisma.turno.count.mockReset();
+    mockPrisma.turno.findMany.mockReset();
     mockPrisma.turno.findUnique.mockReset();
     mockPrisma.usuario.findUnique.mockReset();
-    mockTx.turno.findFirst.mockReset();
+    mockTx.turno.findMany.mockReset();
     mockTx.turno.create.mockReset();
   });
 
@@ -292,6 +294,93 @@ describe('POST /turnos/reservar', () => {
     expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
   });
 
+  it('rejects booking the same active interval', async () => {
+    const date = futureSlot(10, 0);
+    setHappyPathMocks(date);
+    mockTx.turno.findMany.mockResolvedValue([
+      { fechaHora: date, duracionMin: 30, estado: 'RESERVADO' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
+    expect(mockTx.turno.create).not.toHaveBeenCalled();
+  });
+
+  it('allows adjacent 30-minute slots after an existing appointment', async () => {
+    const date = futureSlot(10, 30);
+    setHappyPathMocks(date);
+    mockTx.turno.findMany.mockResolvedValue([
+      { fechaHora: futureSlot(10, 0), duracionMin: 30, estado: 'RESERVADO' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
+  it('allows adjacent 30-minute slots before an existing appointment', async () => {
+    const date = futureSlot(10, 0);
+    setHappyPathMocks(date);
+    mockTx.turno.findMany.mockResolvedValue([
+      { fechaHora: futureSlot(10, 30), duracionMin: 30, estado: 'RESERVADO' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
+  it('rejects booking inside a longer existing appointment', async () => {
+    const date = futureSlot(10, 30);
+    setHappyPathMocks(date);
+    mockTx.turno.findMany.mockResolvedValue([
+      { fechaHora: futureSlot(10, 0), duracionMin: 60, estado: 'RESERVADO' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
+    expect(mockTx.turno.create).not.toHaveBeenCalled();
+  });
+
+  it('allows booking over a cancelled overlapping appointment', async () => {
+    const date = futureSlot(10, 30);
+    setHappyPathMocks(date);
+    mockTx.turno.findMany.mockResolvedValue([
+      { fechaHora: futureSlot(10, 0), duracionMin: 60, estado: 'CANCELADO' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
   it('rejects bookings inside a full-day block', async () => {
     const date = futureSlot();
     setHappyPathMocks(date);
@@ -360,5 +449,33 @@ describe('POST /turnos/reservar', () => {
         lugarAtencion: 'Consultorio disponibilidad',
       }),
     }));
+  });
+
+  it('marks slots unavailable when they overlap longer appointments', async () => {
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '11:00',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: null,
+        diaSemana: 1,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.findMany.mockResolvedValue([
+      { fechaHora: new Date(2026, 4, 18, 9, 30, 0, 0), duracionMin: 60, estado: 'RESERVADO' },
+    ]);
+
+    const res = await request(app)
+      .get(`/turnos/profesional/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([
+      { hora: '09:00', disponible: true },
+      { hora: '09:30', disponible: false },
+      { hora: '10:00', disponible: false },
+      { hora: '10:30', disponible: true },
+    ]);
   });
 });

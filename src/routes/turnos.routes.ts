@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
-import { EstadoTurno } from '@prisma/client';
+import { EstadoTurno, Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
@@ -16,6 +16,7 @@ import {
 import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, getLocalDayBounds, hasAppointmentConflict } from '../utils/appointment-conflicts';
 import rateLimit from 'express-rate-limit';
 
 const router = Router();
@@ -183,8 +184,7 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
     where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
   });
 
-  const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+  const { start: startOfDay, end: endOfDay } = getLocalDayBounds(fechaDate);
 
   const turnosOcupados = await prisma.turno.findMany({
     where: {
@@ -206,7 +206,7 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
       const slotDate = new Date(year, month - 1, day, h, m, 0, 0);
 
-      const ocupado = turnosOcupados.some((t) => t.fechaHora.getTime() === slotDate.getTime());
+      const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
       if (!slotsMap.has(horaStr)) {
         slotsMap.set(horaStr, !ocupado);
       }
@@ -344,39 +344,43 @@ router.post(
 
     const lugarAtencionTurno = matchingDisp?.lugarAtencion ?? profesional.lugarAtencion ?? null;
 
-    const result = await prisma.$transaction(async (tx) => {
-      const existingStart = fechaHoraDate.getTime();
-      const existingEnd = existingStart + 30 * 60 * 1000; // 30 min slots
-
-      const existente = await tx.turno.findFirst({
-        where: {
-          profesionalId,
-          fechaHora: {
-            gte: new Date(existingStart - 30 * 60 * 1000),
-            lte: new Date(existingEnd + 30 * 60 * 1000),
+    let result;
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        const { start, end } = getLocalDayBounds(fechaHoraDate);
+        const turnosDelDia = await tx.turno.findMany({
+          where: {
+            profesionalId,
+            fechaHora: { gte: start, lte: end },
+            estado: { notIn: ['CANCELADO'] },
           },
-          estado: { notIn: ['CANCELADO'] },
-        },
-      });
+          select: { fechaHora: true, duracionMin: true, estado: true },
+        });
 
-      if (existente) {
+        if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+          throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
+        }
+
+        const turno = await tx.turno.create({
+          data: {
+            profesionalId,
+            pacienteId: paciente.id,
+            fechaHora: fechaHoraDate,
+            modalidad,
+            linkVideollamada,
+            lugarAtencion: lugarAtencionTurno,
+            estado: 'RESERVADO',
+          },
+        });
+
+        return turno;
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
       }
-
-      const turno = await tx.turno.create({
-        data: {
-          profesionalId,
-          pacienteId: paciente.id,
-          fechaHora: fechaHoraDate,
-          modalidad,
-          linkVideollamada,
-          lugarAtencion: lugarAtencionTurno,
-          estado: 'RESERVADO',
-        },
-      });
-
-      return turno;
-    });
+      throw err;
+    }
 
     const turnoConRelaciones = await prisma.turno.findUnique({
       where: { id: result.id },
@@ -534,16 +538,18 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   const nuevaLugarAtencion = matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null;
 
   const turnoActualizado = await prisma.$transaction(async (tx) => {
-    const conflicto = await tx.turno.findFirst({
+    const { start, end } = getLocalDayBounds(nuevaFechaHora);
+    const turnosDelDia = await tx.turno.findMany({
       where: {
         id: { not: turno.id },
         profesionalId: turno.profesionalId,
-        fechaHora: nuevaFechaHora,
+        fechaHora: { gte: start, lte: end },
         estado: { notIn: ['CANCELADO'] },
       },
+      select: { fechaHora: true, duracionMin: true, estado: true },
     });
 
-    if (conflicto) {
+    if (hasAppointmentConflict(turnosDelDia, nuevaFechaHora, turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN)) {
       throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El nuevo horario ya fue reservado');
     }
 
@@ -1185,21 +1191,17 @@ router.post('/confirmar-reserva', [
     : null;
 
   const turno = await prisma.$transaction(async (tx) => {
-    const existingStart = verification.fechaHora.getTime();
-    const existingEnd = existingStart + 30 * 60 * 1000;
-
-    const existente = await tx.turno.findFirst({
+    const { start, end } = getLocalDayBounds(verification.fechaHora);
+    const turnosDelDia = await tx.turno.findMany({
       where: {
         profesionalId: verification.profesionalId,
-        fechaHora: {
-          gte: new Date(existingStart - 30 * 60 * 1000),
-          lte: new Date(existingEnd + 30 * 60 * 1000),
-        },
+        fechaHora: { gte: start, lte: end },
         estado: { notIn: ['CANCELADO'] },
       },
+      select: { fechaHora: true, duracionMin: true, estado: true },
     });
 
-    if (existente) {
+    if (hasAppointmentConflict(turnosDelDia, verification.fechaHora, DEFAULT_APPOINTMENT_DURATION_MIN)) {
       throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario ya fue reservado');
     }
 
