@@ -242,28 +242,34 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           });
         }
 
-        const turno = await prisma.turno.update({
+        const turnoActual = await prisma.turno.findUnique({
           where: { id: turnoId },
-          data: { estado: 'CONFIRMADO' },
-          include: { paciente: true, profesional: true },
         });
 
-        await sendNotification(['EMAIL', 'WHATSAPP'], {
-          event: 'TURNO_CONFIRMADO',
-          title: 'Pago aprobado — Turno confirmado',
-          message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
-          userEmail: turno.paciente?.email,
-          userPhone: turno.paciente?.telefono,
-          meta: {
-            turnoId: turno.id,
-            fechaHora: turno.fechaHora.toISOString(),
-            profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
-            modalidad: turno.modalidad,
-            lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
-            pagoId: pago.id,
-            mpPaymentId: paymentId,
-          },
-        });
+        if (turnoActual && !['CANCELADO', 'COMPLETADO', 'AUSENTE'].includes(turnoActual.estado)) {
+          const turno = await prisma.turno.update({
+            where: { id: turnoId },
+            data: { estado: 'CONFIRMADO' },
+            include: { paciente: true, profesional: true },
+          });
+
+          await sendNotification(['EMAIL', 'WHATSAPP'], {
+            event: 'TURNO_CONFIRMADO',
+            title: 'Pago aprobado — Turno confirmado',
+            message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
+            userEmail: turno.paciente?.email,
+            userPhone: turno.paciente?.telefono,
+            meta: {
+              turnoId: turno.id,
+              fechaHora: turno.fechaHora.toISOString(),
+              profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+              modalidad: turno.modalidad,
+              lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
+              pagoId: pago.id,
+              mpPaymentId: paymentId,
+            },
+          });
+        }
       }
     } catch (err) {
       console.error('Error procesando webhook:', err);
@@ -330,7 +336,7 @@ router.post('/confirmar-pago', authMiddleware('PACIENTE'), asyncHandler(async (r
     where: { turnoId },
   });
 
-  if (pago?.estado === 'APROBADO' && turno.estado !== 'CONFIRMADO') {
+  if (pago?.estado === 'APROBADO' && turno.estado !== 'CONFIRMADO' && !['CANCELADO', 'COMPLETADO', 'AUSENTE'].includes(turno.estado)) {
     await prisma.turno.update({
       where: { id: turnoId },
       data: { estado: 'CONFIRMADO' },
