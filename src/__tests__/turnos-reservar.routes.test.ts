@@ -1,6 +1,6 @@
 import express, { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
-import { describe, expect, it, beforeEach, jest } from '@jest/globals';
+import { describe, expect, it, beforeEach, afterEach, jest } from '@jest/globals';
 import { generateToken } from '../middleware/auth.middleware';
 
 const mockTx = {
@@ -30,6 +30,11 @@ const mockPrisma = {
   },
   usuario: {
     findUnique: jest.fn() as any,
+  },
+  bookingVerification: {
+    create: jest.fn() as any,
+    findUnique: jest.fn() as any,
+    delete: jest.fn() as any,
   },
   $transaction: jest.fn() as any,
 };
@@ -209,6 +214,9 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.turno.findMany.mockReset();
     mockPrisma.turno.findUnique.mockReset();
     mockPrisma.usuario.findUnique.mockReset();
+    mockPrisma.bookingVerification.create.mockReset();
+    mockPrisma.bookingVerification.findUnique.mockReset();
+    mockPrisma.bookingVerification.delete.mockReset();
     mockTx.turno.findMany.mockReset();
     mockTx.turno.create.mockReset();
   });
@@ -505,5 +513,62 @@ describe('POST /turnos/reservar', () => {
       { hora: '10:00', disponible: false },
       { hora: '10:30', disponible: true },
     ]);
+  });
+
+  describe('Guest Booking (Gated behind feature flag)', () => {
+    let originalEnv: string | undefined;
+
+    beforeEach(() => {
+      originalEnv = process.env.ENABLE_GUEST_BOOKING;
+    });
+
+    afterEach(() => {
+      process.env.ENABLE_GUEST_BOOKING = originalEnv;
+    });
+
+    it('rejects guest booking with 401 when ENABLE_GUEST_BOOKING is not true', async () => {
+      process.env.ENABLE_GUEST_BOOKING = 'false';
+
+      const res = await request(app)
+        .post('/turnos/reservar')
+        .send(bookingPayload())
+        .timeout({ deadline: 500 });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error?.code).toBe('UNAUTHORIZED');
+      expect(mockPrisma.bookingVerification.create).not.toHaveBeenCalled();
+    });
+
+    it('creates a pending booking verification when ENABLE_GUEST_BOOKING is true', async () => {
+      process.env.ENABLE_GUEST_BOOKING = 'true';
+
+      const date = futureSlot();
+      setHappyPathMocks(date);
+      mockPrisma.bookingVerification.create.mockResolvedValue({ id: 'verification-1' });
+      mockPrisma.turno.findMany.mockResolvedValue([]);
+
+      const res = await request(app)
+        .post('/turnos/reservar')
+        .send({
+          ...bookingPayload(date),
+          email: 'guest@test.com',
+          pacienteData: {
+            nombre: 'Juan',
+            apellido: 'Perez',
+            telefono: '123456789'
+          }
+        })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(202);
+      expect(res.body.data.message).toContain('Verifica tu email');
+      expect(mockPrisma.bookingVerification.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          email: 'guest@test.com',
+          nombre: 'Juan',
+          apellido: 'Perez',
+        })
+      }));
+    });
   });
 });

@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
+import { randomBytes } from 'crypto';
 import { EstadoTurno, Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { asyncHandler, success, AppError } from '../utils/response';
-import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { asyncHandler, success, error, AppError } from '../utils/response';
+import { authMiddleware, optionalAuthMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../services/waitlist.service';
 import { analyzePreconsulta } from '../services/preconsulta.service';
@@ -258,7 +259,7 @@ router.get('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res) 
 
 router.post(
   '/reservar',
-  authMiddleware('PACIENTE'),
+  optionalAuthMiddleware(),
   bookingLimiter,
   [
     body('profesionalId').isUUID(),
@@ -266,6 +267,14 @@ router.post(
     body('modalidad').isIn(['PRESENCIAL', 'VIRTUAL']),
   ],
   asyncHandler(async (req: AuthRequest, res) => {
+    if (req.user && req.user.rol !== 'PACIENTE') {
+      res.status(403).json(error('FORBIDDEN', 'Sin permisos'));
+      return;
+    }
+    if (!req.user && process.env.ENABLE_GUEST_BOOKING !== 'true') {
+      res.status(401).json(error('UNAUTHORIZED', 'Token requerido'));
+      return;
+    }
     validateRequest(validationResult(req));
 
     const { profesionalId, fechaHora, modalidad } = req.body;
@@ -286,11 +295,14 @@ router.post(
       throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
     }
 
-    const paciente = await prisma.paciente.findUnique({
-      where: { usuarioId: req.user!.userId },
-    });
-    if (!paciente) {
-      throw new AppError(404, 'PACIENTE_NOT_FOUND', 'Paciente no encontrado');
+    let paciente: any = null;
+    if (req.user) {
+      paciente = await prisma.paciente.findUnique({
+        where: { usuarioId: req.user.userId },
+      });
+      if (!paciente) {
+        throw new AppError(404, 'PACIENTE_NOT_FOUND', 'Paciente no encontrado');
+      }
     }
 
     const diaSemanaBooking = clinicParts.weekday;
@@ -350,6 +362,66 @@ router.post(
       }
     }
 
+    if (!req.user) {
+      if (process.env.ENABLE_GUEST_BOOKING !== 'true') {
+        throw new AppError(403, 'GUEST_BOOKING_DISABLED', 'La reserva de turnos para invitados está deshabilitada temporalmente.');
+      }
+
+      const { email, pacienteData } = req.body;
+      if (!email) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'El email es requerido para reserva de invitado');
+      }
+      if (!pacienteData || !pacienteData.nombre || !pacienteData.apellido) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'El nombre y apellido son requeridos para reserva de invitado');
+      }
+
+      // Check slot conflict again before reserving
+      const { start, end } = getClinicDayBoundsForInstant(fechaHoraDate);
+      const turnosDelDia = await prisma.turno.findMany({
+        where: {
+          profesionalId,
+          fechaHora: { gte: start, lt: end },
+          estado: { notIn: ['CANCELADO'] },
+        },
+        select: { fechaHora: true, duracionMin: true, estado: true },
+      });
+
+      if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+        throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
+      }
+
+      const token = randomBytes(32).toString('hex');
+      await prisma.bookingVerification.create({
+        data: {
+          token,
+          email,
+          nombre: pacienteData.nombre,
+          apellido: pacienteData.apellido,
+          profesionalId,
+          fechaHora: fechaHoraDate,
+          modalidad,
+          telefonoPaciente: pacienteData.telefono,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hour expiry
+        },
+      });
+
+      // Send confirmation email
+      const confirmUrl = `${process.env.FRONTEND_URL}/auth/confirmar-turno?token=${token}`;
+      sendNotification(['EMAIL'], {
+        event: 'BOOKING_CONFIRMATION',
+        title: 'Confirmá tu reserva de turno',
+        message: 'Haz clic en el enlace para confirmar tu reserva. Este enlace vence en 24 horas.',
+        userEmail: email,
+        meta: { confirmUrl, nombre: pacienteData.nombre },
+      }).catch((err) => console.error('[turnos] confirmation email error:', err));
+
+      res.status(202).json(success({
+        message: 'Verifica tu email para confirmar la reserva',
+        email,
+      }));
+      return;
+    }
+
     const linkVideollamada = modalidad === 'VIRTUAL'
         ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
         : null;
@@ -376,7 +448,7 @@ router.post(
         const turno = await tx.turno.create({
           data: {
             profesionalId,
-            pacienteId: paciente.id,
+            pacienteId: paciente!.id,
             fechaHora: fechaHoraDate,
             modalidad,
             linkVideollamada,
@@ -1180,6 +1252,10 @@ router.post('/confirmar-reserva', [
   body('token').isString().isLength({ min: 32 }),
 ], asyncHandler(async (req, res) => {
   validateRequest(validationResult(req));
+  if (process.env.ENABLE_GUEST_BOOKING !== 'true') {
+    throw new AppError(403, 'GUEST_BOOKING_DISABLED', 'La reserva de turnos para invitados está deshabilitada temporalmente.');
+  }
+
 
   const { token } = req.body;
 

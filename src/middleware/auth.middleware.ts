@@ -63,3 +63,30 @@ export function authMiddleware(requiredRol?: AllowedRol | AllowedRol[]) {
     }
   };
 }
+
+export function optionalAuthMiddleware() {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    let token: string | undefined;
+    const authHeader = req.headers.authorization;
+
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.cookies?.token) {
+      token = req.cookies.token;
+    }
+
+    if (!token) {
+      return next();
+    }
+
+    try {
+      const payload = verifyToken(token);
+      req.user = payload;
+      next();
+    } catch {
+      // Just ignore invalid token for optional auth, or we can reject it
+      // Rejecting is safer to avoid confusing bugs
+      return res.status(401).json(error('INVALID_TOKEN', 'Token inválido'));
+    }
+  };
+}
