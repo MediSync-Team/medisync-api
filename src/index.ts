@@ -33,6 +33,7 @@ import { suscripcionesRouter } from './routes/suscripciones.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 import { expireStaleWaitlistNotifications } from './services/waitlist.service';
+import { cleanupStaleReservations } from './services/appointment-cleanup.service';
 import { createCorsOriginRules, isOriginAllowed } from './config/cors';
 import prisma from './lib/prisma';
 
@@ -166,6 +167,14 @@ const waitlistJob = cron.schedule('*/30 * * * *', async () => {
   }
 });
 
+const cleanupJob = cron.schedule('*/15 * * * *', async () => {
+  try {
+    await cleanupStaleReservations();
+  } catch (err) {
+    console.error('[cleanup] stale reservations job error:', err);
+  }
+});
+
 let shuttingDown = false;
 
 function gracefulShutdown(signal: string) {
@@ -176,6 +185,7 @@ function gracefulShutdown(signal: string) {
   console.log(`[shutdown] ${signal} received, closing server...`);
   reminderJob.stop();
   waitlistJob.stop();
+  cleanupJob.stop();
   httpServer.close(() => {
     prisma.$disconnect().then(() => {
       console.log('[shutdown] Prisma disconnected, exiting.');
