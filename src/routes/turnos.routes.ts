@@ -667,6 +667,21 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
 
   const { turno: turnoActual, isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
 
+  if (estado && estado !== turnoActual.estado) {
+    const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+      'RESERVADO': ['CONFIRMADO', 'CANCELADO', 'AUSENTE'],
+      'CONFIRMADO': ['COMPLETADO', 'CANCELADO', 'AUSENTE'],
+      'COMPLETADO': [],
+      'CANCELADO': [],
+      'AUSENTE': [],
+    };
+
+    const allowedNext = ALLOWED_TRANSITIONS[turnoActual.estado] || [];
+    if (!allowedNext.includes(estado)) {
+      throw new AppError(409, 'INVALID_STATE_TRANSITION', `No se puede cambiar el estado de ${turnoActual.estado} a ${estado}`);
+    }
+  }
+
   if (isPacienteOwner && estado && estado !== 'CANCELADO') {
     throw new AppError(403, 'FORBIDDEN', 'El paciente solo puede cancelar su turno');
   }
