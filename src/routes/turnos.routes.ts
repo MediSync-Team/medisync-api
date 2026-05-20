@@ -18,6 +18,7 @@ import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
 import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict } from '../utils/appointment-conflicts';
+import { canTransitionTurnoState } from '../utils/turno-state';
 import {
   clinicDateTimeToUtcDate,
   formatClinicDateTimeEs,
@@ -741,16 +742,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
   const { turno: turnoActual, isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
 
   if (estado && estado !== turnoActual.estado) {
-    const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-      'RESERVADO': ['CONFIRMADO', 'CANCELADO', 'AUSENTE'],
-      'CONFIRMADO': ['COMPLETADO', 'CANCELADO', 'AUSENTE'],
-      'COMPLETADO': [],
-      'CANCELADO': [],
-      'AUSENTE': [],
-    };
-
-    const allowedNext = ALLOWED_TRANSITIONS[turnoActual.estado] || [];
-    if (!allowedNext.includes(estado)) {
+    if (!canTransitionTurnoState(turnoActual.estado, estado)) {
       throw new AppError(409, 'INVALID_STATE_TRANSITION', `No se puede cambiar el estado de ${turnoActual.estado} a ${estado}`);
     }
   }

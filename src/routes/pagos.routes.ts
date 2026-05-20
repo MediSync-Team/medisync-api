@@ -5,6 +5,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
 import { validateAndApplyCoupon } from '../utils/coupon';
+import { isPayableTurnoState } from '../utils/turno-state';
 
 const router = Router();
 
@@ -26,12 +27,6 @@ interface MercadoPagoPaymentResponse {
   external_reference?: string;
   status?: string;
   transaction_amount?: number;
-}
-
-const PAYABLE_TURNO_STATES = ['RESERVADO', 'CONFIRMADO'];
-
-function isPayableTurnoState(estado?: string | null): boolean {
-  return !!estado && PAYABLE_TURNO_STATES.includes(estado);
 }
 
 function parseSignatureHeader(signature: string) {
@@ -89,7 +84,7 @@ router.post(
       throw new AppError(403, 'FORBIDDEN', 'Sin permisos para pagar este turno');
     }
 
-    if (turno.estado !== 'RESERVADO' && turno.estado !== 'CONFIRMADO') {
+    if (!isPayableTurnoState(turno.estado)) {
       throw new AppError(400, 'INVALID_STATE', 'El turno no admite pagos en su estado actual');
     }
 
@@ -101,10 +96,12 @@ router.post(
     const precio = Number(turno.profesional.precioConsulta);
 
     if (precio <= 0) {
-      await prisma.turno.update({
-        where: { id: turnoId },
-        data: { estado: 'CONFIRMADO' },
-      });
+      if (turno.estado === 'RESERVADO') {
+        await prisma.turno.update({
+          where: { id: turnoId },
+          data: { estado: 'CONFIRMADO' },
+        });
+      }
       res.json(success({
         necesitaPago: false,
         mensaje: 'Turno confirmado sin pago'
@@ -351,14 +348,22 @@ router.post('/confirmar-pago', authMiddleware('PACIENTE'), asyncHandler(async (r
     where: { turnoId },
   });
 
-  if (pago?.estado === 'APROBADO' && turno.estado !== 'CONFIRMADO' && !['CANCELADO', 'COMPLETADO', 'AUSENTE'].includes(turno.estado)) {
+  let turnoEstado = turno.estado;
+  const canConfirmTurno = isPayableTurnoState(turno.estado);
+
+  if (pago?.estado === 'APROBADO' && turno.estado !== 'CONFIRMADO' && canConfirmTurno) {
     await prisma.turno.update({
       where: { id: turnoId },
       data: { estado: 'CONFIRMADO' },
     });
+    turnoEstado = 'CONFIRMADO';
   }
 
-  res.json(success({ confirmed: pago?.estado === 'APROBADO', estado: pago?.estado || null }));
+  res.json(success({
+    confirmed: pago?.estado === 'APROBADO' && canConfirmTurno,
+    estado: pago?.estado || null,
+    turnoEstado,
+  }));
 }));
 
 export { router as pagosRouter };
