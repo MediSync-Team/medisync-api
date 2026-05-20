@@ -17,7 +17,7 @@ import {
 import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
 import { canTransitionTurnoState } from '../utils/turno-state';
 import {
   clinicDateTimeToUtcDate,
@@ -193,19 +193,28 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
   }
   const diaSemana = getClinicWeekdayFromDateString(fechaStr);
 
-  const disponibilidad = await prisma.disponibilidad.findMany({
-    where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
-  });
-
   const { start: startOfDay, end: endOfDay } = getClinicDayBoundsFromDateString(fechaStr);
+  const fechaDate = getClinicDateOnlyUtc(fechaStr);
 
-  const turnosOcupados = await prisma.turno.findMany({
-    where: {
-      profesionalId: req.params.profesionalId,
-      fechaHora: { gte: startOfDay, lt: endOfDay },
-      estado: { notIn: ['CANCELADO'] },
-    },
-  });
+  const [disponibilidad, turnosOcupados, bloqueos] = await Promise.all([
+    prisma.disponibilidad.findMany({
+      where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
+    }),
+    prisma.turno.findMany({
+      where: {
+        profesionalId: req.params.profesionalId,
+        fechaHora: { gte: startOfDay, lt: endOfDay },
+        estado: { notIn: ['CANCELADO'] },
+      },
+    }),
+    prisma.bloqueoDisponibilidad.findMany({
+      where: {
+        profesionalId: req.params.profesionalId,
+        fechaInicio: { lte: fechaDate },
+        fechaFin: { gte: fechaDate },
+      },
+    }),
+  ]);
 
   const slotsMap = new Map<string, boolean>();
 
@@ -218,10 +227,12 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
     while (h < hf || (h === hf && m < mf)) {
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
       const slotDate = clinicDateTimeToUtcDate(fechaStr, horaStr);
+      const slotMinutes = h * 60 + m;
 
       const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
+      const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
       if (!slotsMap.has(horaStr)) {
-        slotsMap.set(horaStr, !ocupado);
+        slotsMap.set(horaStr, !ocupado && !bloqueado);
       }
 
       m += 30;
@@ -332,12 +343,7 @@ router.post(
     });
     if (bloqueos.length > 0) {
       const slotMinutes = clinicParts.hour * 60 + clinicParts.minute;
-      const bloqueado = bloqueos.some((b) => {
-        if (!b.horaInicio || !b.horaFin) return true; // full-day block
-        const [bh, bm] = b.horaInicio.split(':').map(Number);
-        const [eh, em] = b.horaFin.split(':').map(Number);
-        return slotMinutes >= bh * 60 + bm && slotMinutes < eh * 60 + em;
-      });
+      const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
       if (bloqueado) throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
     }
 
@@ -624,6 +630,19 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
 
   const profReprog = await prisma.profesional.findUnique({ where: { id: turno.profesionalId }, select: { lugarAtencion: true } });
   const nuevaLugarAtencion = matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null;
+
+  const nuevaSlotDate = getClinicDateOnlyUtc(nuevaClinicParts.dateKey);
+  const bloqueosReprogramacion = await prisma.bloqueoDisponibilidad.findMany({
+    where: {
+      profesionalId: turno.profesionalId,
+      fechaInicio: { lte: nuevaSlotDate },
+      fechaFin: { gte: nuevaSlotDate },
+    },
+  });
+  const nuevaSlotMinutes = nuevaClinicParts.hour * 60 + nuevaClinicParts.minute;
+  if (hasBlockConflict(bloqueosReprogramacion, nuevaSlotMinutes, turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN)) {
+    throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
+  }
 
   const turnoActualizado = await prisma.$transaction(async (tx) => {
     const { start, end } = getClinicDayBoundsForInstant(nuevaFechaHora);

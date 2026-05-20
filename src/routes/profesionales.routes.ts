@@ -4,7 +4,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
-import { hasAppointmentConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
 import {
   addDaysToClinicDate,
   clinicDateTimeToUtcDate,
@@ -424,12 +424,7 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
         const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
 
         // Check if slot falls within a partial bloqueo
-        const bloqueado = bloqueos.some(b => {
-          if (!b.horaInicio || !b.horaFin) return false;
-          const [bi, bmi] = b.horaInicio.split(':').map(Number);
-          const [bf, bmf] = b.horaFin.split(':').map(Number);
-          return slotMinutes >= bi * 60 + bmi && slotMinutes < bf * 60 + bmf;
-        });
+        const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
 
         if (!slotsMap.has(horaStr)) {
           slotsMap.set(horaStr, { disponible: !ocupado && !bloqueado, lugarAtencion: disp.lugarAtencion ?? null });

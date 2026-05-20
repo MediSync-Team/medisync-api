@@ -5,11 +5,13 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { createNotification } from '../services/notification.service';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, hasBlockConflict } from '../utils/appointment-conflicts';
 import {
   clinicDateTimeToUtcDate,
   formatClinicDateKey,
   formatClinicDateTimeEs,
   getClinicDateOnlyUtc,
+  getClinicDateTimeParts,
   getClinicDayBoundsFromDateString,
 } from '../utils/clinic-time';
 
@@ -102,9 +104,11 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
       },
     });
 
-    const { start, end } = buildBlockRange(inicioKey, finKey, horaInicio, horaFin);
+    const { start, end } = horaInicio && horaFin
+      ? getClinicDayBoundsFromDateString(inicioKey)
+      : buildBlockRange(inicioKey, finKey, horaInicio, horaFin);
 
-    const turnosAfectados = await tx.turno.findMany({
+    const turnosCandidatos = await tx.turno.findMany({
       where: {
         profesionalId: profesional.id,
         estado: { in: ['RESERVADO', 'CONFIRMADO'] },
@@ -112,6 +116,18 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
       },
       include: { paciente: true, profesional: { include: { usuario: true } } },
     });
+
+    const turnosAfectados = horaInicio && horaFin
+      ? turnosCandidatos.filter((turno) => {
+          const parts = getClinicDateTimeParts(turno.fechaHora);
+          const appointmentStartMinutes = parts.hour * 60 + parts.minute;
+          return hasBlockConflict(
+            [{ horaInicio, horaFin }],
+            appointmentStartMinutes,
+            turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN
+          );
+        })
+      : turnosCandidatos;
 
     const notasCancelacion = `Turno cancelado por bloqueo de agenda del profesional${motivo ? ': ' + motivo : ''}.`;
 

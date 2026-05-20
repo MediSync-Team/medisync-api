@@ -7,6 +7,7 @@ const mockTx = {
   turno: {
     findMany: jest.fn() as any,
     create: jest.fn() as any,
+    update: jest.fn() as any,
   },
 };
 
@@ -80,6 +81,7 @@ jest.mock('../utils/auth-helpers', () => ({
 }));
 
 import { turnosRouter } from '../routes/turnos.routes';
+import { profesionalesRouter } from '../routes/profesionales.routes';
 import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const profesionalId = '11111111-1111-4111-8111-111111111111';
@@ -90,6 +92,7 @@ function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/turnos', turnosRouter);
+  app.use('/profesionales', profesionalesRouter);
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     res.status(err.statusCode || 500).json({
       success: false,
@@ -219,6 +222,7 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.bookingVerification.delete.mockReset();
     mockTx.turno.findMany.mockReset();
     mockTx.turno.create.mockReset();
+    mockTx.turno.update.mockReset();
   });
 
   it.each(['PROFESIONAL', 'ADMIN', 'CLINICA'] as const)('rejects %s tokens before booking logic', async (rol) => {
@@ -424,6 +428,41 @@ describe('POST /turnos/reservar', () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects bookings that partially overlap a block', async () => {
+    const date = futureSlot(10, 0);
+    setHappyPathMocks(date);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '10:15', horaFin: '10:45' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 500 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_BLOQUEADO');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows bookings adjacent to a partial block', async () => {
+    const date = futureSlot(10, 0);
+    setHappyPathMocks(date);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '10:30', horaFin: '11:00' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
   it('rejects non half-hour slot times', async () => {
     const res = await request(app)
       .post('/turnos/reservar')
@@ -573,6 +612,7 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.turno.findMany.mockResolvedValue([
       { fechaHora: clinicDateTimeToUtcDate('2026-05-18', '09:30'), duracionMin: 60, estado: 'RESERVADO' },
     ]);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([]);
 
     const res = await request(app)
       .get(`/turnos/profesional/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`)
@@ -585,6 +625,102 @@ describe('POST /turnos/reservar', () => {
       { hora: '10:00', disponible: false },
       { hora: '10:30', disponible: true },
     ]);
+  });
+
+  it('marks legacy turnos slots unavailable when they partially overlap blocks', async () => {
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:30',
+        horaFin: '11:00',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: null,
+        diaSemana: 1,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.findMany.mockResolvedValue([]);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '10:15', horaFin: '10:45' },
+    ]);
+
+    const res = await request(app)
+      .get(`/turnos/profesional/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([
+      { hora: '09:30', disponible: true },
+      { hora: '10:00', disponible: false },
+      { hora: '10:30', disponible: false },
+    ]);
+  });
+
+  it('marks professional slots unavailable when they partially overlap blocks', async () => {
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:30',
+        horaFin: '11:00',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: 'Consultorio',
+        diaSemana: 1,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.findMany.mockResolvedValue([]);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '10:15', horaFin: '10:45' },
+    ]);
+
+    const res = await request(app)
+      .get(`/profesionales/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([
+      { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio' },
+      { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio' },
+      { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio' },
+    ]);
+  });
+
+  it('rejects reprogramming into a partial block overlap', async () => {
+    const currentDate = futureSlot(9, 0);
+    const newDate = futureSlot(10, 0);
+    mockPrisma.turno.findUnique.mockResolvedValue({
+      id: 'turno-1',
+      profesionalId,
+      fechaHora: currentDate,
+      duracionMin: 30,
+      estado: 'RESERVADO',
+      modalidad: 'PRESENCIAL',
+      paciente: { usuarioId: pacienteUsuarioId },
+      profesional: { usuarioId: '44444444-4444-4444-8444-444444444444' },
+      pago: null,
+    });
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '12:00',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio disponibilidad',
+        diaSemana: getClinicDateTimeParts(newDate).weekday,
+        activo: true,
+      },
+    ]);
+    mockPrisma.profesional.findUnique.mockResolvedValue({ lugarAtencion: 'Consultorio central' });
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '10:15', horaFin: '10:45' },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/turno-1/reprogramar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_BLOQUEADO');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   describe('Guest Booking (Gated behind feature flag)', () => {

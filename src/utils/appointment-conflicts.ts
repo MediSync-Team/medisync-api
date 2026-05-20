@@ -6,12 +6,44 @@ export type AppointmentConflictCandidate = {
   estado?: string | null;
 };
 
+export type AvailabilityBlockCandidate = {
+  horaInicio?: string | null;
+  horaFin?: string | null;
+};
+
 export function getAppointmentEnd(fechaHora: Date, duracionMin: number = DEFAULT_APPOINTMENT_DURATION_MIN): Date {
   return new Date(fechaHora.getTime() + duracionMin * 60_000);
 }
 
 export function intervalsOverlap(startA: Date, endA: Date, startB: Date, endB: Date): boolean {
   return startA < endB && endA > startB;
+}
+
+export function timeStringToMinutes(value: string): number {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+export function appointmentOverlapsBlock(
+  block: AvailabilityBlockCandidate,
+  appointmentStartMinutes: number,
+  appointmentDurationMin: number = DEFAULT_APPOINTMENT_DURATION_MIN
+): boolean {
+  if (!block.horaInicio || !block.horaFin) return true;
+
+  const appointmentEndMinutes = appointmentStartMinutes + appointmentDurationMin;
+  const blockStartMinutes = timeStringToMinutes(block.horaInicio);
+  const blockEndMinutes = timeStringToMinutes(block.horaFin);
+
+  return appointmentStartMinutes < blockEndMinutes && appointmentEndMinutes > blockStartMinutes;
+}
+
+export function hasBlockConflict(
+  blocks: AvailabilityBlockCandidate[],
+  appointmentStartMinutes: number,
+  appointmentDurationMin: number = DEFAULT_APPOINTMENT_DURATION_MIN
+): boolean {
+  return blocks.some((block) => appointmentOverlapsBlock(block, appointmentStartMinutes, appointmentDurationMin));
 }
 
 export function appointmentOverlapsSlot(
