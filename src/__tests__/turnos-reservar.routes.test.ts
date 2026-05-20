@@ -80,7 +80,7 @@ jest.mock('../utils/auth-helpers', () => ({
 }));
 
 import { turnosRouter } from '../routes/turnos.routes';
-import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getClinicDateTimeParts } from '../utils/clinic-time';
+import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const profesionalId = '11111111-1111-4111-8111-111111111111';
 const pacienteUsuarioId = '22222222-2222-4222-8222-222222222222';
@@ -120,7 +120,7 @@ function bookingPayload(date = futureSlot(), modalidad: 'PRESENCIAL' | 'VIRTUAL'
   };
 }
 
-function setHappyPathMocks(date = futureSlot()) {
+function setHappyPathMocks(date = futureSlot(), plan: 'PRO' | 'FREE' = 'PRO') {
   mockPrisma.profesional.findUnique
     .mockResolvedValueOnce({
       id: profesionalId,
@@ -133,7 +133,7 @@ function setHappyPathMocks(date = futureSlot()) {
       notifWhatsapp: false,
       telefono: null,
     })
-    .mockResolvedValueOnce({ plan: 'PRO' });
+    .mockResolvedValueOnce({ plan });
   mockPrisma.paciente.findUnique.mockResolvedValue({
     id: pacienteId,
     usuarioId: pacienteUsuarioId,
@@ -485,6 +485,78 @@ describe('POST /turnos/reservar', () => {
         lugarAtencion: 'Consultorio disponibilidad',
       }),
     }));
+  });
+
+  it('counts FREE plan bookings only inside the requested appointment scheduling month', async () => {
+    const date = clinicDateTimeToUtcDate('2030-06-15', '10:00');
+    const { start, end } = getClinicMonthBounds(2030, 6);
+    setHappyPathMocks(date, 'FREE');
+    mockPrisma.turno.count.mockResolvedValue(19);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.turno.count).toHaveBeenCalledWith({
+      where: {
+        profesionalId,
+        fechaHora: { gte: start, lt: end },
+        estado: { notIn: ['CANCELADO'] },
+      },
+    });
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
+  it('rejects FREE plan bookings when the requested appointment month already has 20 active appointments', async () => {
+    const date = clinicDateTimeToUtcDate('2030-06-15', '10:00');
+    setHappyPathMocks(date, 'FREE');
+    mockPrisma.turno.count.mockResolvedValue(20);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('PLAN_LIMIT_REACHED');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockTx.turno.create).not.toHaveBeenCalled();
+  });
+
+  it('uses Argentina scheduling month for FREE plan limits near UTC month boundaries', async () => {
+    const date = new Date('2030-06-01T02:30:00.000Z'); // May 31 23:30 in Argentina
+    const { start, end } = getClinicMonthBounds(2030, 5);
+    setHappyPathMocks(date, 'FREE');
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '23:00',
+        horaFin: '23:59',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio nocturno',
+        diaSemana: getClinicDateTimeParts(date).weekday,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.count.mockResolvedValue(19);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.turno.count).toHaveBeenCalledWith({
+      where: {
+        profesionalId,
+        fechaHora: { gte: start, lt: end },
+        estado: { notIn: ['CANCELADO'] },
+      },
+    });
   });
 
   it('marks slots unavailable when they overlap longer appointments', async () => {

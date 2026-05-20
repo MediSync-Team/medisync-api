@@ -25,6 +25,7 @@ import {
   getClinicDateTimeParts,
   getClinicDayBoundsFromDateString,
   getClinicDayBoundsForInstant,
+  getClinicMonthBounds,
   getClinicWeekdayFromDateString,
 } from '../utils/clinic-time';
 import rateLimit from 'express-rate-limit';
@@ -345,11 +346,11 @@ router.post(
       select: { plan: true },
     });
     if (prof?.plan === 'FREE') {
-      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+      const { start, end } = getClinicMonthBounds(clinicParts.year, clinicParts.month);
       const count = await prisma.turno.count({
         where: {
           profesionalId,
-          fechaHora: { gte: startOfMonth },
+          fechaHora: { gte: start, lt: end },
           estado: { notIn: ['CANCELADO'] },
         },
       });
