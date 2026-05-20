@@ -28,6 +28,12 @@ interface MercadoPagoPaymentResponse {
   transaction_amount?: number;
 }
 
+const PAYABLE_TURNO_STATES = ['RESERVADO', 'CONFIRMADO'];
+
+function isPayableTurnoState(estado?: string | null): boolean {
+  return !!estado && PAYABLE_TURNO_STATES.includes(estado);
+}
+
 function parseSignatureHeader(signature: string) {
   const parts = signature.split(',').map((p) => p.trim());
   let ts = '';
@@ -216,6 +222,21 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const turnoId = payment.external_reference;
 
       if (turnoId && payment.status === 'approved') {
+        const turnoActual = await prisma.turno.findUnique({
+          where: { id: turnoId },
+          select: { estado: true },
+        });
+
+        if (!isPayableTurnoState(turnoActual?.estado)) {
+          console.warn('[pagos] Ignoring approved payment for non-payable turno', {
+            turnoId,
+            turnoEstado: turnoActual?.estado ?? 'MISSING',
+            mpPaymentId: String(paymentId),
+          });
+          res.json(success({ received: true }));
+          return;
+        }
+
         const pago = await prisma.pago.upsert({
           where: { turnoId },
           update: {
@@ -242,34 +263,28 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           });
         }
 
-        const turnoActual = await prisma.turno.findUnique({
+        const turno = await prisma.turno.update({
           where: { id: turnoId },
+          data: { estado: 'CONFIRMADO' },
+          include: { paciente: true, profesional: true },
         });
 
-        if (turnoActual && !['CANCELADO', 'COMPLETADO', 'AUSENTE'].includes(turnoActual.estado)) {
-          const turno = await prisma.turno.update({
-            where: { id: turnoId },
-            data: { estado: 'CONFIRMADO' },
-            include: { paciente: true, profesional: true },
-          });
-
-          await sendNotification(['EMAIL', 'WHATSAPP'], {
-            event: 'TURNO_CONFIRMADO',
-            title: 'Pago aprobado — Turno confirmado',
-            message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
-            userEmail: turno.paciente?.email,
-            userPhone: turno.paciente?.telefono,
-            meta: {
-              turnoId: turno.id,
-              fechaHora: turno.fechaHora.toISOString(),
-              profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
-              modalidad: turno.modalidad,
-              lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
-              pagoId: pago.id,
-              mpPaymentId: paymentId,
-            },
-          });
-        }
+        await sendNotification(['EMAIL', 'WHATSAPP'], {
+          event: 'TURNO_CONFIRMADO',
+          title: 'Pago aprobado — Turno confirmado',
+          message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
+          userEmail: turno.paciente?.email,
+          userPhone: turno.paciente?.telefono,
+          meta: {
+            turnoId: turno.id,
+            fechaHora: turno.fechaHora.toISOString(),
+            profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+            modalidad: turno.modalidad,
+            lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
+            pagoId: pago.id,
+            mpPaymentId: paymentId,
+          },
+        });
       }
     } catch (err) {
       console.error('Error procesando webhook:', err);
