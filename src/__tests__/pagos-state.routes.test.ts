@@ -9,7 +9,9 @@ const mockPrisma = {
     update: jest.fn() as any,
   },
   pago: {
+    create: jest.fn() as any,
     findUnique: jest.fn() as any,
+    update: jest.fn() as any,
     upsert: jest.fn() as any,
   },
   cupon: {
@@ -82,10 +84,17 @@ describe('payment routes appointment state consistency', () => {
     jest.clearAllMocks();
     (validateAndApplyCoupon as jest.MockedFunction<typeof validateAndApplyCoupon>).mockReset();
     mockPrisma.pago.findUnique.mockResolvedValue(null);
+    mockPrisma.pago.create.mockResolvedValue({ id: 'pago-1', estado: 'PENDIENTE' });
+    mockPrisma.pago.update.mockResolvedValue({ id: 'pago-1', estado: 'PENDIENTE' });
     mockPrisma.turno.update.mockResolvedValue({ id: turnoId, estado: 'CONFIRMADO' });
     mockPrisma.pago.upsert.mockResolvedValue({ id: 'pago-1', estado: 'APROBADO' });
     mockPrisma.cupon.update.mockResolvedValue({ id: 'cupon-1' });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+    (global as any).fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ id: 'mp-pref-1', init_point: 'https://mp.test/checkout' }),
+      status: 200,
+    }));
   });
 
   it('confirms a RESERVADO turno when payment is approved', async () => {
@@ -296,5 +305,76 @@ describe('payment routes appointment state consistency', () => {
     expect(res.status).toBe(400);
     expect(res.body.error?.code).toBe('INVALID_STATE');
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+  });
+
+  it('creates pending payment when creating a paid Mercado Pago preference with no existing payment', async () => {
+    mockTurno('RESERVADO', 420);
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      necesitaPago: true,
+      preferenciaId: 'mp-pref-1',
+      initPoint: 'https://mp.test/checkout',
+      estado: 'PENDIENTE',
+    });
+    expect(mockPrisma.pago.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        turnoId,
+        monto: 420,
+        montoNeto: 420,
+        estado: 'PENDIENTE',
+        mpPreferenciaId: 'mp-pref-1',
+      }),
+    });
+    expect(mockPrisma.pago.update).not.toHaveBeenCalled();
+  });
+
+  it('updates non-approved payment when creating a new paid Mercado Pago preference', async () => {
+    mockTurno('RESERVADO', 420);
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', estado: 'PENDIENTE' });
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ necesitaPago: true });
+    expect(mockPrisma.pago.update).toHaveBeenCalledWith({
+      where: { turnoId },
+      data: expect.objectContaining({
+        monto: 420,
+        montoNeto: 420,
+        estado: 'PENDIENTE',
+        mpPreferenciaId: 'mp-pref-1',
+      }),
+    });
+    expect(mockPrisma.pago.create).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite payment if it becomes approved before paid preference persistence', async () => {
+    mockTurno('RESERVADO', 420);
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', estado: 'APROBADO' });
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      necesitaPago: false,
+    });
+    expect(mockPrisma.pago.create).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.update).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
   });
 });

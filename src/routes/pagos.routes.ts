@@ -195,26 +195,43 @@ router.post(
         throw new AppError(400, 'MP_ERROR', errorMsg);
       }
 
-      await prisma.pago.upsert({
-        where: { turnoId },
-        update: {
+      const persistedPreference = await prisma.$transaction(async (tx) => {
+        const currentPago = await tx.pago.findUnique({ where: { turnoId } });
+
+        if (currentPago?.estado === 'APROBADO') {
+          return { needsPayment: false as const };
+        }
+
+        const preferencePaymentData = {
           monto: precioFinal,
           montoNeto: precioFinal,
-          estado: 'PENDIENTE',
+          estado: 'PENDIENTE' as const,
           mpPreferenciaId: data.id,
           cuponId,
           montoDescuento,
-        },
-        create: {
-          turnoId,
-          monto: precioFinal,
-          montoNeto: precioFinal,
-          estado: 'PENDIENTE',
-          mpPreferenciaId: data.id,
-          cuponId,
-          montoDescuento,
-        },
+        };
+
+        if (currentPago) {
+          await tx.pago.update({
+            where: { turnoId },
+            data: preferencePaymentData,
+          });
+        } else {
+          await tx.pago.create({
+            data: {
+              turnoId,
+              ...preferencePaymentData,
+            },
+          });
+        }
+
+        return { needsPayment: true as const };
       });
+
+      if (!persistedPreference.needsPayment) {
+        res.json(success({ necesitaPago: false, mensaje: 'El turno ya se encuentra abonado' }));
+        return;
+      }
 
       res.json(success({
         necesitaPago: true,
