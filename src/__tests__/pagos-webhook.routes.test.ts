@@ -1,6 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { describe, expect, it, beforeEach, afterEach, jest } from '@jest/globals';
+import { Prisma } from '@prisma/client';
 
 const mockPrisma = {
   turno: {
@@ -237,6 +238,30 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     const res = await postApprovedWebhook(app);
 
     expect(res.status).toBe(200);
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not run side effects when a concurrent payment create already won', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', null));
+    mockPrisma.pago.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed on turnoId', {
+        code: 'P2002',
+        clientVersion: 'test',
+      })
+    );
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        turnoId,
+        estado: 'APROBADO',
+        mpPaymentId: paymentId,
+      }),
+    });
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
     expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
     expect(mockSendNotification).not.toHaveBeenCalled();

@@ -285,6 +285,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             return { skipped: true as const, turnoEstado: turnoActual.estado };
           }
 
+          // Keep coupon usage tied to the one webhook that newly approves the payment.
           if (pago.cuponId) {
             await tx.cupon.update({
               where: { id: pago.cuponId },
