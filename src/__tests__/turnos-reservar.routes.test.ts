@@ -28,6 +28,11 @@ const mockPrisma = {
     count: jest.fn() as any,
     findMany: jest.fn() as any,
     findUnique: jest.fn() as any,
+    update: jest.fn() as any,
+    updateMany: jest.fn() as any,
+  },
+  auditoriaDisponibilidad: {
+    create: jest.fn() as any,
   },
   usuario: {
     findUnique: jest.fn() as any,
@@ -83,6 +88,10 @@ jest.mock('../utils/auth-helpers', () => ({
 import { turnosRouter } from '../routes/turnos.routes';
 import { profesionalesRouter } from '../routes/profesionales.routes';
 import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
+import { sendNotification } from '../utils/notifications';
+import { createNotification } from '../services/notification.service';
+import { notifyWaitlistForReleasedSlot } from '../services/waitlist.service';
+import { syncTurnoCancelled, syncTurnoCancelledForPaciente } from '../services/calendar-sync.service';
 
 const profesionalId = '11111111-1111-4111-8111-111111111111';
 const pacienteUsuarioId = '22222222-2222-4222-8222-222222222222';
@@ -281,6 +290,51 @@ function setReprogramHappyPathMocks(options: {
   return { newDate };
 }
 
+function makePatchTurno(estado: 'RESERVADO' | 'CONFIRMADO' | 'COMPLETADO' | 'CANCELADO' | 'AUSENTE', fechaHora = futureSlot()) {
+  return {
+    id: 'turno-1',
+    profesionalId,
+    pacienteId,
+    paciente: {
+      id: pacienteId,
+      usuarioId: pacienteUsuarioId,
+      nombre: 'Franco',
+      apellido: 'Pedretti',
+      email: 'franco@test.com',
+      telefono: null,
+      notifEmail: true,
+      notifWhatsapp: false,
+    },
+    profesional: {
+      id: profesionalId,
+      usuarioId: profesionalUsuarioId,
+      nombre: 'Pedro',
+      apellido: 'Franchetti',
+      lugarAtencion: 'Consultorio central',
+      notifEmail: true,
+      notifWhatsapp: false,
+      telefono: null,
+      especialidad: { nombre: 'Clinica medica' },
+    },
+    fechaHora,
+    duracionMin: 30,
+    estado,
+    modalidad: 'PRESENCIAL',
+    lugarAtencion: 'Consultorio central',
+    linkVideollamada: null,
+    pago: null,
+  };
+}
+
+function expectNoCancellationSideEffects() {
+  expect(sendNotification).not.toHaveBeenCalled();
+  expect(createNotification).not.toHaveBeenCalled();
+  expect(notifyWaitlistForReleasedSlot).not.toHaveBeenCalled();
+  expect(mockPrisma.auditoriaDisponibilidad.create).not.toHaveBeenCalled();
+  expect(syncTurnoCancelled).not.toHaveBeenCalled();
+  expect(syncTurnoCancelledForPaciente).not.toHaveBeenCalled();
+}
+
 describe('POST /turnos/reservar', () => {
   const app = makeApp();
 
@@ -294,6 +348,9 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.turno.count.mockReset();
     mockPrisma.turno.findMany.mockReset();
     mockPrisma.turno.findUnique.mockReset();
+    mockPrisma.turno.update.mockReset();
+    mockPrisma.turno.updateMany.mockReset();
+    mockPrisma.auditoriaDisponibilidad.create.mockReset();
     mockPrisma.usuario.findUnique.mockReset();
     mockPrisma.bookingVerification.create.mockReset();
     mockPrisma.bookingVerification.findUnique.mockReset();
@@ -799,6 +856,131 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('HORARIO_BLOQUEADO');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  describe('Cancellation idempotency', () => {
+    it('cancels a reserved appointment once and runs cancellation side effects', async () => {
+      const activeTurno = makePatchTurno('RESERVADO');
+      const cancelledTurno = { ...activeTurno, estado: 'CANCELADO' };
+      mockPrisma.turno.findUnique
+        .mockResolvedValueOnce(activeTurno)
+        .mockResolvedValueOnce(cancelledTurno);
+      mockPrisma.turno.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.auditoriaDisponibilidad.create.mockResolvedValue({ id: 'audit-1' });
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ estado: 'CANCELADO', notasCancelacion: 'No atiendo ese dia' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockPrisma.turno.updateMany).toHaveBeenCalledWith({
+        where: { id: 'turno-1', estado: { in: ['RESERVADO', 'CONFIRMADO'] } },
+        data: { estado: 'CANCELADO', notasCancelacion: 'No atiendo ese dia' },
+      });
+      expect(sendNotification).toHaveBeenCalledTimes(1);
+      expect(createNotification).toHaveBeenCalledTimes(1);
+      expect(notifyWaitlistForReleasedSlot).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.auditoriaDisponibilidad.create).toHaveBeenCalledTimes(1);
+      expect(syncTurnoCancelled).toHaveBeenCalledTimes(1);
+      expect(syncTurnoCancelledForPaciente).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels a confirmed appointment once and runs cancellation side effects', async () => {
+      const activeTurno = makePatchTurno('CONFIRMADO');
+      const cancelledTurno = { ...activeTurno, estado: 'CANCELADO' };
+      mockPrisma.turno.findUnique
+        .mockResolvedValueOnce(activeTurno)
+        .mockResolvedValueOnce(cancelledTurno);
+      mockPrisma.turno.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.auditoriaDisponibilidad.create.mockResolvedValue({ id: 'audit-1' });
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ estado: 'CANCELADO' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockPrisma.turno.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'turno-1', estado: { in: ['RESERVADO', 'CONFIRMADO'] } },
+      }));
+      expect(notifyWaitlistForReleasedSlot).toHaveBeenCalledTimes(1);
+      expect(syncTurnoCancelled).toHaveBeenCalledTimes(1);
+      expect(syncTurnoCancelledForPaciente).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns success for an already cancelled appointment without side effects', async () => {
+      const cancelledTurno = makePatchTurno('CANCELADO');
+      mockPrisma.turno.findUnique
+        .mockResolvedValueOnce(cancelledTurno)
+        .mockResolvedValueOnce(cancelledTurno);
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ estado: 'CANCELADO' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockPrisma.turno.updateMany).not.toHaveBeenCalled();
+      expectNoCancellationSideEffects();
+    });
+
+    it('returns success without side effects when another request already cancelled it', async () => {
+      const activeTurno = makePatchTurno('RESERVADO');
+      const cancelledTurno = { ...activeTurno, estado: 'CANCELADO' };
+      mockPrisma.turno.findUnique
+        .mockResolvedValueOnce(activeTurno)
+        .mockResolvedValueOnce(cancelledTurno);
+      mockPrisma.turno.updateMany.mockResolvedValue({ count: 0 });
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ estado: 'CANCELADO' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockPrisma.turno.updateMany).toHaveBeenCalledTimes(1);
+      expectNoCancellationSideEffects();
+    });
+
+    it('returns an invalid transition when the atomic cancel loses to another terminal state', async () => {
+      const activeTurno = makePatchTurno('RESERVADO');
+      const completedTurno = { ...activeTurno, estado: 'COMPLETADO' };
+      mockPrisma.turno.findUnique
+        .mockResolvedValueOnce(activeTurno)
+        .mockResolvedValueOnce(completedTurno);
+      mockPrisma.turno.updateMany.mockResolvedValue({ count: 0 });
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ estado: 'CANCELADO' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error?.code).toBe('INVALID_STATE_TRANSITION');
+      expectNoCancellationSideEffects();
+    });
+
+    it('keeps patient cancellation-window validation before atomic cancellation', async () => {
+      const soonTurno = makePatchTurno('RESERVADO', new Date(Date.now() + 60 * 60 * 1000));
+      mockPrisma.turno.findUnique.mockResolvedValueOnce(soonTurno);
+
+      const res = await request(app)
+        .patch('/turnos/turno-1')
+        .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+        .send({ estado: 'CANCELADO' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error?.code).toBe('CANCELLATION_WINDOW_EXCEEDED');
+      expect(mockPrisma.turno.updateMany).not.toHaveBeenCalled();
+      expectNoCancellationSideEffects();
+    });
   });
 
   describe('Reprogramming modality side effects', () => {

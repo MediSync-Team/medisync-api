@@ -71,6 +71,16 @@ async function assertTurnoAccess(turnoId: string, req: AuthRequest) {
   return { turno, isPacienteOwner, isProfesionalOwner };
 }
 
+function getTurnoStatusResponse(turnoId: string) {
+  return prisma.turno.findUnique({
+    where: { id: turnoId },
+    include: {
+      paciente: true,
+      profesional: { include: { especialidad: true } },
+    },
+  });
+}
+
 function canCancelTurno(turnoFechaHora: Date): boolean {
   const cancellationWindowHours = Number(process.env.CANCELLATION_WINDOW_HOURS || 24);
   const diffMs = turnoFechaHora.getTime() - Date.now();
@@ -768,14 +778,24 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
 
   const { turno: turnoActual, isPacienteOwner, isProfesionalOwner } = await assertTurnoAccess(req.params.id, req);
 
+  if (isPacienteOwner && estado && estado !== 'CANCELADO') {
+    throw new AppError(403, 'FORBIDDEN', 'El paciente solo puede cancelar su turno');
+  }
+
+  if (!isPacienteOwner && !isProfesionalOwner) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para modificar este turno');
+  }
+
+  if (estado === 'CANCELADO' && turnoActual.estado === 'CANCELADO') {
+    const turnoCancelado = await getTurnoStatusResponse(req.params.id);
+    res.json(success(turnoCancelado));
+    return;
+  }
+
   if (estado && estado !== turnoActual.estado) {
     if (!canTransitionTurnoState(turnoActual.estado, estado)) {
       throw new AppError(409, 'INVALID_STATE_TRANSITION', `No se puede cambiar el estado de ${turnoActual.estado} a ${estado}`);
     }
-  }
-
-  if (isPacienteOwner && estado && estado !== 'CANCELADO') {
-    throw new AppError(403, 'FORBIDDEN', 'El paciente solo puede cancelar su turno');
   }
 
   if (isPacienteOwner && estado === 'CANCELADO' && !canCancelTurno(turnoActual.fechaHora)) {
@@ -786,18 +806,50 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     );
   }
 
-  if (!isPacienteOwner && !isProfesionalOwner) {
-    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para modificar este turno');
-  }
+  let cancellationSideEffectsEnabled = false;
+  let turnoActualizado;
 
-  const turnoActualizado = await prisma.turno.update({
-    where: { id: req.params.id },
-    data: { estado, notasCancelacion },
-    include: {
-      paciente: true,
-      profesional: { include: { especialidad: true } },
-    },
-  });
+  if (estado === 'CANCELADO') {
+    const result = await prisma.turno.updateMany({
+      where: {
+        id: req.params.id,
+        estado: { in: ['RESERVADO', 'CONFIRMADO'] },
+      },
+      data: { estado: 'CANCELADO', notasCancelacion },
+    });
+
+    if (result.count === 0) {
+      const latestTurno = await getTurnoStatusResponse(req.params.id);
+
+      if (latestTurno?.estado === 'CANCELADO') {
+        res.json(success(latestTurno));
+        return;
+      }
+
+      throw new AppError(
+        409,
+        'INVALID_STATE_TRANSITION',
+        `No se puede cambiar el estado de ${latestTurno?.estado ?? turnoActual.estado} a CANCELADO`
+      );
+    }
+
+    const updatedAfterCancel = await getTurnoStatusResponse(req.params.id);
+    if (!updatedAfterCancel) {
+      throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+    }
+
+    turnoActualizado = updatedAfterCancel;
+    cancellationSideEffectsEnabled = true;
+  } else {
+    turnoActualizado = await prisma.turno.update({
+      where: { id: req.params.id },
+      data: { estado, notasCancelacion },
+      include: {
+        paciente: true,
+        profesional: { include: { especialidad: true } },
+      },
+    });
+  }
 
   const metaBase = {
     turnoId: turnoActualizado.id,
@@ -809,7 +861,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
     linkVideollamada: turnoActualizado.linkVideollamada ?? undefined,
   };
 
-  if (estado === 'CANCELADO') {
+  if (estado === 'CANCELADO' && cancellationSideEffectsEnabled) {
     // Notificar al paciente
     if (turnoActualizado.paciente) {
       const pacChannels = resolveChannels({
@@ -903,7 +955,7 @@ router.patch('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, res
 
   res.json(success(turnoActualizado));
   // Fire-and-forget Google Calendar sync on cancellation (profesional + paciente)
-  if (estado === 'CANCELADO') {
+  if (estado === 'CANCELADO' && cancellationSideEffectsEnabled) {
     syncTurnoCancelled(turnoActualizado.id).catch(() => {});
     syncTurnoCancelledForPaciente(turnoActualizado.id).catch(() => {});
   }
