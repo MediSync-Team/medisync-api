@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
+import { getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -25,13 +26,14 @@ router.get(
       throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
     }
 
-    // Count turnos this month (not CANCELADO)
+    // Count turnos this Argentina scheduling month (not CANCELADO)
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const parts = getClinicDateTimeParts(now);
+    const { start: startOfMonth, end: endOfMonth } = getClinicMonthBounds(parts.year, parts.month);
     const turnosEsteMes = await prisma.turno.count({
       where: {
         profesionalId,
-        fechaHora: { gte: startOfMonth },
+        fechaHora: { gte: startOfMonth, lt: endOfMonth },
         estado: { notIn: ['CANCELADO'] },
       },
     });
