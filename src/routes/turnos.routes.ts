@@ -77,6 +77,10 @@ function canCancelTurno(turnoFechaHora: Date): boolean {
   return diffMs >= cancellationWindowHours * 60 * 60 * 1000;
 }
 
+function createVideoCallLink(): string {
+  return `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`;
+}
+
 function assertPreconsultaEditable(turno: { fechaHora: Date; estado: string }) {
   if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
     throw new AppError(400, 'INVALID_STATE', 'Solo se puede completar preconsulta en turnos reservados o confirmados');
@@ -430,9 +434,7 @@ router.post(
       return;
     }
 
-    const linkVideollamada = modalidad === 'VIRTUAL'
-        ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
-        : null;
+    const linkVideollamada = modalidad === 'VIRTUAL' ? createVideoCallLink() : null;
 
     const lugarAtencionTurno = matchingDisp?.lugarAtencion ?? profesional.lugarAtencion ?? null;
 
@@ -629,7 +631,12 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   }
 
   const profReprog = await prisma.profesional.findUnique({ where: { id: turno.profesionalId }, select: { lugarAtencion: true } });
-  const nuevaLugarAtencion = matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null;
+  const nuevaLinkVideollamada = modalidadFinal === 'VIRTUAL'
+    ? turno.linkVideollamada ?? createVideoCallLink()
+    : null;
+  const nuevaLugarAtencion = modalidadFinal === 'PRESENCIAL'
+    ? matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null
+    : null;
 
   const nuevaSlotDate = getClinicDateOnlyUtc(nuevaClinicParts.dateKey);
   const bloqueosReprogramacion = await prisma.bloqueoDisponibilidad.findMany({
@@ -665,6 +672,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
       data: {
         fechaHora: nuevaFechaHora,
         modalidad: modalidadFinal,
+        linkVideollamada: nuevaLinkVideollamada,
         lugarAtencion: nuevaLugarAtencion,
         estado: turno.pago?.estado === 'APROBADO' ? 'CONFIRMADO' : 'RESERVADO',
       },

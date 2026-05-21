@@ -87,6 +87,7 @@ import { addDaysToClinicDate, clinicDateTimeToUtcDate, formatClinicDateKey, getC
 const profesionalId = '11111111-1111-4111-8111-111111111111';
 const pacienteUsuarioId = '22222222-2222-4222-8222-222222222222';
 const pacienteId = '33333333-3333-4333-8333-333333333333';
+const profesionalUsuarioId = '99999999-9999-4999-8999-999999999999';
 
 function makeApp() {
   const app = express();
@@ -201,6 +202,83 @@ function setHappyPathMocks(date = futureSlot(), plan: 'PRO' | 'FREE' = 'PRO') {
     },
   });
   mockPrisma.usuario.findUnique.mockResolvedValue({ id: '44444444-4444-4444-8444-444444444444', email: 'doc@test.com' });
+}
+
+function setReprogramHappyPathMocks(options: {
+  currentModalidad: 'PRESENCIAL' | 'VIRTUAL';
+  currentLinkVideollamada?: string | null;
+  disponibilidadLugar?: string | null;
+  profesionalLugar?: string | null;
+}) {
+  const currentDate = futureSlot(9, 0);
+  const newDate = futureSlot(10, 0);
+  const currentLugar = options.currentModalidad === 'PRESENCIAL' ? 'Consultorio anterior' : null;
+  const disponibilidadLugar = options.disponibilidadLugar !== undefined
+    ? options.disponibilidadLugar
+    : 'Consultorio disponibilidad';
+  const profesionalLugar = options.profesionalLugar !== undefined
+    ? options.profesionalLugar
+    : 'Consultorio central';
+
+  mockPrisma.turno.findUnique.mockResolvedValue({
+    id: 'turno-1',
+    profesionalId,
+    pacienteId,
+    fechaHora: currentDate,
+    duracionMin: 30,
+    estado: 'RESERVADO',
+    modalidad: options.currentModalidad,
+    lugarAtencion: currentLugar,
+    linkVideollamada: options.currentLinkVideollamada ?? null,
+    paciente: { usuarioId: pacienteUsuarioId },
+    profesional: { usuarioId: profesionalUsuarioId },
+    pago: null,
+  });
+  mockPrisma.disponibilidad.findMany.mockResolvedValue([
+    {
+      horaInicio: '09:00',
+      horaFin: '12:00',
+      modalidad: 'AMBOS',
+      lugarAtencion: disponibilidadLugar,
+      diaSemana: getClinicDateTimeParts(newDate).weekday,
+      activo: true,
+    },
+  ]);
+  mockPrisma.profesional.findUnique.mockResolvedValue({ lugarAtencion: profesionalLugar });
+  mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([]);
+  mockTx.turno.findMany.mockResolvedValue([]);
+  mockTx.turno.update.mockImplementation(async ({ data }: any) => ({
+    id: 'turno-1',
+    profesionalId,
+    pacienteId,
+    duracionMin: 30,
+    ...data,
+    paciente: {
+      id: pacienteId,
+      usuarioId: pacienteUsuarioId,
+      nombre: 'Franco',
+      apellido: 'Pedretti',
+      email: 'franco@test.com',
+      telefono: null,
+      notifEmail: true,
+      notifWhatsapp: false,
+      usuario: { id: pacienteUsuarioId },
+    },
+    profesional: {
+      id: profesionalId,
+      usuarioId: profesionalUsuarioId,
+      nombre: 'Pedro',
+      apellido: 'Franchetti',
+      lugarAtencion: profesionalLugar,
+      notifEmail: true,
+      notifWhatsapp: false,
+      telefono: null,
+    },
+    pago: null,
+  }));
+  mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockTx));
+
+  return { newDate };
 }
 
 describe('POST /turnos/reservar', () => {
@@ -721,6 +799,97 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('HORARIO_BLOQUEADO');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  describe('Reprogramming modality side effects', () => {
+    it('creates a video link and clears location when changing from in-person to virtual', async () => {
+      const { newDate } = setReprogramHappyPathMocks({
+        currentModalidad: 'PRESENCIAL',
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-1/reprogramar')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ fechaHora: newDate.toISOString(), modalidad: 'VIRTUAL' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          modalidad: 'VIRTUAL',
+          linkVideollamada: expect.stringMatching(/^https:\/\/meet\.jit\.si\/MediSync-/),
+          lugarAtencion: null,
+        }),
+      }));
+    });
+
+    it('clears video link and sets resolved location when changing from virtual to in-person', async () => {
+      const { newDate } = setReprogramHappyPathMocks({
+        currentModalidad: 'VIRTUAL',
+        currentLinkVideollamada: 'https://meet.jit.si/MediSync-existing',
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-1/reprogramar')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          modalidad: 'PRESENCIAL',
+          linkVideollamada: null,
+          lugarAtencion: 'Consultorio disponibilidad',
+        }),
+      }));
+    });
+
+    it('reuses the existing video link when staying virtual', async () => {
+      const existingLink = 'https://meet.jit.si/MediSync-existing';
+      const { newDate } = setReprogramHappyPathMocks({
+        currentModalidad: 'VIRTUAL',
+        currentLinkVideollamada: existingLink,
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-1/reprogramar')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ fechaHora: newDate.toISOString(), modalidad: 'VIRTUAL' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          modalidad: 'VIRTUAL',
+          linkVideollamada: existingLink,
+          lugarAtencion: null,
+        }),
+      }));
+    });
+
+    it('keeps no video link and falls back to professional location when staying in-person', async () => {
+      const { newDate } = setReprogramHappyPathMocks({
+        currentModalidad: 'PRESENCIAL',
+        disponibilidadLugar: null,
+        profesionalLugar: 'Consultorio central',
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-1/reprogramar')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          modalidad: 'PRESENCIAL',
+          linkVideollamada: null,
+          lugarAtencion: 'Consultorio central',
+        }),
+      }));
+    });
   });
 
   describe('Guest Booking (Gated behind feature flag)', () => {
