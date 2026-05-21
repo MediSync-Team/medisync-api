@@ -18,7 +18,7 @@ import {
 import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, findMatchingAvailability, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
 import { canTransitionTurnoState } from '../utils/turno-state';
 import {
   formatClinicDateTimeEs,
@@ -285,15 +285,11 @@ router.post(
     }
 
     const diaSemanaBooking = clinicParts.weekday;
-    const horaBookingStr = clinicParts.timeKey;
+    const bookingStartMinutes = clinicParts.hour * 60 + clinicParts.minute;
     const dispSlots = await prisma.disponibilidad.findMany({
       where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
     });
-    const matchingDisp = dispSlots.find((disp) => {
-      const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidad;
-      const horarioOk = horaBookingStr >= disp.horaInicio && horaBookingStr < disp.horaFin;
-      return modalidadOk && horarioOk;
-    });
+    const matchingDisp = findMatchingAvailability(dispSlots, modalidad, bookingStartMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
 
     if (!matchingDisp) {
       throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
@@ -570,7 +566,8 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
 
   const modalidadFinal = nuevaModalidad || turno.modalidad;
   const diaSemana = nuevaClinicParts.weekday;
-  const horaStr = nuevaClinicParts.timeKey;
+  const reprogramStartMinutes = nuevaClinicParts.hour * 60 + nuevaClinicParts.minute;
+  const reprogramDurationMin = turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN;
 
   const disponibilidades = await prisma.disponibilidad.findMany({
     where: {
@@ -580,11 +577,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     },
   });
 
-  let matchingDispRep = disponibilidades.find((disp) => {
-    const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidadFinal;
-    const horarioOk = horaStr >= disp.horaInicio && horaStr < disp.horaFin;
-    return modalidadOk && horarioOk;
-  });
+  let matchingDispRep = findMatchingAvailability(disponibilidades, modalidadFinal, reprogramStartMinutes, reprogramDurationMin);
 
   const slotValido = !!matchingDispRep;
 
@@ -609,7 +602,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
     },
   });
   const nuevaSlotMinutes = nuevaClinicParts.hour * 60 + nuevaClinicParts.minute;
-  if (hasBlockConflict(bloqueosReprogramacion, nuevaSlotMinutes, turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN)) {
+  if (hasBlockConflict(bloqueosReprogramacion, nuevaSlotMinutes, reprogramDurationMin)) {
     throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
   }
 
@@ -625,7 +618,7 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
       select: { fechaHora: true, duracionMin: true, estado: true },
     });
 
-    if (hasAppointmentConflict(turnosDelDia, nuevaFechaHora, turno.duracionMin ?? DEFAULT_APPOINTMENT_DURATION_MIN)) {
+    if (hasAppointmentConflict(turnosDelDia, nuevaFechaHora, reprogramDurationMin)) {
       throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El nuevo horario ya fue reservado');
     }
 

@@ -440,6 +440,49 @@ describe('POST /turnos/reservar', () => {
     expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
   });
 
+  it('rejects bookings that do not fully fit inside availability', async () => {
+    const date = futureSlot(10, 0);
+    mockPrisma.profesional.findUnique.mockResolvedValue({ id: profesionalId, activo: true });
+    mockPrisma.paciente.findUnique.mockResolvedValue({ id: pacienteId, usuarioId: pacienteUsuarioId });
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      { horaInicio: '09:00', horaFin: '10:15', modalidad: 'PRESENCIAL', lugarAtencion: null },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date, 'PRESENCIAL'))
+      .timeout({ deadline: 500 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
+    expect(mockPrisma.bloqueoDisponibilidad.findMany).not.toHaveBeenCalled();
+  });
+
+  it('allows bookings ending exactly at availability end', async () => {
+    const date = futureSlot(10, 0);
+    setHappyPathMocks(date);
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '10:30',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: 'Consultorio disponibilidad',
+        diaSemana: getClinicDateTimeParts(date).weekday,
+        activo: true,
+      },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date, 'PRESENCIAL'))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.turno.create).toHaveBeenCalled();
+  });
+
   it('rejects booking the same active interval', async () => {
     const date = futureSlot(10, 0);
     setHappyPathMocks(date);
@@ -615,7 +658,7 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.disponibilidad.findMany.mockResolvedValue([
       {
         horaInicio: '23:00',
-        horaFin: '23:59',
+        horaFin: '24:00',
         modalidad: 'AMBOS',
         lugarAtencion: 'Consultorio nocturno',
         diaSemana: getClinicDateTimeParts(date).weekday,
@@ -708,7 +751,7 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.disponibilidad.findMany.mockResolvedValue([
       {
         horaInicio: '23:00',
-        horaFin: '23:59',
+        horaFin: '24:00',
         modalidad: 'AMBOS',
         lugarAtencion: 'Consultorio nocturno',
         diaSemana: getClinicDateTimeParts(date).weekday,
@@ -887,6 +930,105 @@ describe('POST /turnos/reservar', () => {
       { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio' },
       { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio' },
     ]);
+  });
+
+  it('does not expose slots that do not fully fit inside availability', async () => {
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '10:15',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: 'Consultorio corto',
+        diaSemana: 1,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.findMany.mockResolvedValue([]);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get(`/profesionales/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([
+      { hora: '09:00', disponible: true, lugarAtencion: 'Consultorio corto' },
+      { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio corto' },
+    ]);
+  });
+
+  it('rejects reprogramming a 30-minute appointment that does not fully fit inside availability', async () => {
+    const currentDate = futureSlot(9, 0);
+    const newDate = futureSlot(10, 0);
+    mockPrisma.turno.findUnique.mockResolvedValue({
+      id: 'turno-1',
+      profesionalId,
+      fechaHora: currentDate,
+      duracionMin: 30,
+      estado: 'RESERVADO',
+      modalidad: 'PRESENCIAL',
+      paciente: { usuarioId: pacienteUsuarioId },
+      profesional: { usuarioId: '44444444-4444-4444-8444-444444444444' },
+      pago: null,
+    });
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '10:15',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio disponibilidad',
+        diaSemana: getClinicDateTimeParts(newDate).weekday,
+        activo: true,
+      },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/turno-1/reprogramar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
+    expect(mockPrisma.profesional.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects reprogramming a longer appointment that does not fully fit inside availability', async () => {
+    const currentDate = futureSlot(9, 0);
+    const newDate = futureSlot(10, 0);
+    mockPrisma.turno.findUnique.mockResolvedValue({
+      id: 'turno-1',
+      profesionalId,
+      fechaHora: currentDate,
+      duracionMin: 60,
+      estado: 'RESERVADO',
+      modalidad: 'PRESENCIAL',
+      paciente: { usuarioId: pacienteUsuarioId },
+      profesional: { usuarioId: '44444444-4444-4444-8444-444444444444' },
+      pago: null,
+    });
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:00',
+        horaFin: '10:30',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio disponibilidad',
+        diaSemana: getClinicDateTimeParts(newDate).weekday,
+        activo: true,
+      },
+    ]);
+
+    const res = await request(app)
+      .post('/turnos/turno-1/reprogramar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code).toBe('HORARIO_NO_DISPONIBLE');
+    expect(mockPrisma.profesional.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('rejects reprogramming into a partial block overlap', async () => {

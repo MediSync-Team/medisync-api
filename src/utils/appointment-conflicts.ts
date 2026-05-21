@@ -11,6 +11,12 @@ export type AvailabilityBlockCandidate = {
   horaFin?: string | null;
 };
 
+export type AvailabilityCandidate = {
+  horaInicio: string;
+  horaFin: string;
+  modalidad?: string | null;
+};
+
 export function getAppointmentEnd(fechaHora: Date, duracionMin: number = DEFAULT_APPOINTMENT_DURATION_MIN): Date {
   return new Date(fechaHora.getTime() + duracionMin * 60_000);
 }
@@ -22,6 +28,30 @@ export function intervalsOverlap(startA: Date, endA: Date, startB: Date, endB: D
 export function timeStringToMinutes(value: string): number {
   const [hours, minutes] = value.split(':').map(Number);
   return hours * 60 + minutes;
+}
+
+export function appointmentFitsAvailability(
+  availability: AvailabilityCandidate,
+  appointmentStartMinutes: number,
+  appointmentDurationMin: number = DEFAULT_APPOINTMENT_DURATION_MIN
+): boolean {
+  const availabilityStartMinutes = timeStringToMinutes(availability.horaInicio);
+  const availabilityEndMinutes = timeStringToMinutes(availability.horaFin);
+  const appointmentEndMinutes = appointmentStartMinutes + appointmentDurationMin;
+
+  return appointmentStartMinutes >= availabilityStartMinutes && appointmentEndMinutes <= availabilityEndMinutes;
+}
+
+export function findMatchingAvailability<T extends AvailabilityCandidate>(
+  availabilities: T[],
+  modalidad: string,
+  appointmentStartMinutes: number,
+  appointmentDurationMin: number = DEFAULT_APPOINTMENT_DURATION_MIN
+): T | undefined {
+  return availabilities.find((availability) => {
+    const modalidadOk = availability.modalidad === 'AMBOS' || availability.modalidad === modalidad;
+    return modalidadOk && appointmentFitsAvailability(availability, appointmentStartMinutes, appointmentDurationMin);
+  });
 }
 
 export function appointmentOverlapsBlock(

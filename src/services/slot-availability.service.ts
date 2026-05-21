@@ -1,5 +1,5 @@
 import prisma from '../lib/prisma';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, appointmentFitsAvailability, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
 import {
   clinicDateTimeToUtcDate,
   getClinicDateOnlyUtc,
@@ -58,10 +58,11 @@ export async function getAvailableSlotsForProfessional(params: {
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
       const slotDate = clinicDateTimeToUtcDate(fecha, horaStr);
       const slotMinutes = h * 60 + m;
+      const fitsAvailability = appointmentFitsAvailability(disp, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
       const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
       const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
 
-      if (!slotsMap.has(horaStr)) {
+      if (fitsAvailability && !slotsMap.has(horaStr)) {
         slotsMap.set(horaStr, {
           disponible: !ocupado && !bloqueado,
           lugarAtencion: disp.lugarAtencion ?? null,
