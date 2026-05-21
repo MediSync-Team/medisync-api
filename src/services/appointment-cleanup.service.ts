@@ -35,22 +35,27 @@ export async function cleanupStaleReservations() {
   for (const turno of staleTurnos) {
     try {
       const updated = await prisma.$transaction(async (tx) => {
-        // Re-verify under transaction lock to prevent race conditions
-        const current = await tx.turno.findUnique({
-          where: { id: turno.id },
-          select: { estado: true },
-        });
-
-        if (!current || current.estado !== 'RESERVADO') {
-          return null;
-        }
-
-        return await tx.turno.update({
-          where: { id: turno.id },
+        const result = await tx.turno.updateMany({
+          where: {
+            id: turno.id,
+            estado: 'RESERVADO',
+            OR: [
+              { pago: null },
+              { pago: { estado: { not: 'APROBADO' } } },
+            ],
+          },
           data: {
             estado: 'CANCELADO',
             notasCancelacion: 'Reserva expirada por falta de pago.',
           },
+        });
+
+        if (result.count === 0) {
+          return null;
+        }
+
+        return await tx.turno.findUnique({
+          where: { id: turno.id },
         });
       });
 
