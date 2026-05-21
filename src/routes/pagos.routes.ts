@@ -6,6 +6,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
 import { validateAndApplyCoupon } from '../utils/coupon';
 import { isPayableTurnoState } from '../utils/turno-state';
+import { Prisma } from '@prisma/client';
 
 const router = Router();
 
@@ -219,52 +220,100 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const turnoId = payment.external_reference;
 
       if (turnoId && payment.status === 'approved') {
-        const turnoActual = await prisma.turno.findUnique({
-          where: { id: turnoId },
-          select: { estado: true },
+        const approved = await prisma.$transaction(async (tx) => {
+          const turnoActual = await tx.turno.findUnique({
+            where: { id: turnoId },
+            include: {
+              pago: true,
+              paciente: true,
+              profesional: true,
+            },
+          });
+
+          if (!turnoActual || !isPayableTurnoState(turnoActual.estado)) {
+            return {
+              skipped: true as const,
+              turnoEstado: turnoActual?.estado ?? 'MISSING',
+            };
+          }
+
+          if (turnoActual.pago?.estado === 'APROBADO') {
+            return { skipped: true as const, turnoEstado: turnoActual.estado };
+          }
+
+          const paymentData = {
+            estado: 'APROBADO' as const,
+            mpPaymentId: String(paymentId),
+            mpStatus: payment.status,
+          };
+          const amount = Number(payment.transaction_amount || 0);
+          let pago = turnoActual.pago;
+
+          if (pago) {
+            const updated = await tx.pago.updateMany({
+              where: {
+                turnoId,
+                estado: { not: 'APROBADO' },
+              },
+              data: paymentData,
+            });
+
+            if (updated.count === 0) {
+              return { skipped: true as const, turnoEstado: turnoActual.estado };
+            }
+
+            pago = await tx.pago.findUnique({ where: { turnoId } });
+          } else {
+            try {
+              pago = await tx.pago.create({
+                data: {
+                  turnoId,
+                  monto: amount,
+                  montoNeto: amount,
+                  ...paymentData,
+                },
+              });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+                return { skipped: true as const, turnoEstado: turnoActual.estado };
+              }
+              throw err;
+            }
+          }
+
+          if (!pago) {
+            return { skipped: true as const, turnoEstado: turnoActual.estado };
+          }
+
+          if (pago.cuponId) {
+            await tx.cupon.update({
+              where: { id: pago.cuponId },
+              data: { usosActuales: { increment: 1 } },
+            });
+          }
+
+          const turno = await tx.turno.update({
+            where: { id: turnoId },
+            data: { estado: 'CONFIRMADO' },
+            include: { paciente: true, profesional: true },
+          });
+
+          return { skipped: false as const, pago, turno };
         });
 
-        if (!isPayableTurnoState(turnoActual?.estado)) {
-          console.warn('[pagos] Ignoring approved payment for non-payable turno', {
-            turnoId,
-            turnoEstado: turnoActual?.estado ?? 'MISSING',
-            mpPaymentId: String(paymentId),
-          });
+        if (approved.skipped) {
+          if (approved.turnoEstado === 'MISSING' || !isPayableTurnoState(approved.turnoEstado)) {
+            console.warn('[pagos] Ignoring approved payment for non-payable turno', {
+              turnoId,
+              turnoEstado: approved.turnoEstado,
+              mpPaymentId: String(paymentId),
+            });
+          }
           res.json(success({ received: true }));
           return;
         }
 
-        const pago = await prisma.pago.upsert({
-          where: { turnoId },
-          update: {
-            estado: 'APROBADO',
-            mpPaymentId: String(paymentId),
-            mpStatus: payment.status,
-          },
-          create: {
-            turnoId,
-            monto: Number(payment.transaction_amount || 0),
-            montoNeto: Number(payment.transaction_amount || 0),
-            estado: 'APROBADO',
-            mpPaymentId: String(paymentId),
-            mpStatus: payment.status,
-          },
-          include: { cupon: true },
-        });
-
-        // Increment coupon usage if one was used
-        if (pago.cuponId) {
-          await prisma.cupon.update({
-            where: { id: pago.cuponId },
-            data: { usosActuales: { increment: 1 } },
-          });
-        }
-
-        const turno = await prisma.turno.update({
-          where: { id: turnoId },
-          data: { estado: 'CONFIRMADO' },
-          include: { paciente: true, profesional: true },
-        });
+        const { pago, turno } = approved;
 
         await sendNotification(['EMAIL', 'WHATSAPP'], {
           event: 'TURNO_CONFIRMADO',

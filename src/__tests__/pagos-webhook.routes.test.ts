@@ -8,11 +8,14 @@ const mockPrisma = {
     update: jest.fn() as any,
   },
   pago: {
-    upsert: jest.fn() as any,
+    create: jest.fn() as any,
+    findUnique: jest.fn() as any,
+    updateMany: jest.fn() as any,
   },
   cupon: {
     update: jest.fn() as any,
   },
+  $transaction: jest.fn() as any,
 };
 
 jest.mock('../lib/prisma', () => ({
@@ -57,6 +60,25 @@ function mockApprovedPayment() {
   }));
 }
 
+function makeTurno(estado: 'RESERVADO' | 'CONFIRMADO' | 'CANCELADO' | 'COMPLETADO' | 'AUSENTE', pago: any = null) {
+  return {
+    id: turnoId,
+    estado,
+    pago,
+    fechaHora: new Date('2026-05-18T13:00:00.000Z'),
+    modalidad: 'PRESENCIAL',
+    paciente: {
+      email: 'paciente@test.com',
+      telefono: null,
+    },
+    profesional: {
+      nombre: 'Pedro',
+      apellido: 'Franchetti',
+      lugarAtencion: 'Consultorio',
+    },
+  };
+}
+
 function mockUpdatedTurno(estado: 'RESERVADO' | 'CONFIRMADO' = 'CONFIRMADO') {
   mockPrisma.turno.update.mockResolvedValue({
     id: turnoId,
@@ -90,7 +112,10 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     jest.clearAllMocks();
     delete process.env.MP_WEBHOOK_SECRET;
     mockApprovedPayment();
-    mockPrisma.pago.upsert.mockResolvedValue({ id: 'pago-1', cuponId: null });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+    mockPrisma.pago.create.mockResolvedValue({ id: 'pago-1', cuponId: null });
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: null, estado: 'APROBADO' });
+    mockPrisma.pago.updateMany.mockResolvedValue({ count: 1 });
     mockUpdatedTurno();
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -100,17 +125,24 @@ describe('POST /pagos/webhook payment approval state guards', () => {
   });
 
   it('approves payment and confirms a RESERVADO turno', async () => {
-    mockPrisma.turno.findUnique.mockResolvedValue({ estado: 'RESERVADO' });
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: null,
+    }));
 
     const res = await postApprovedWebhook(app);
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true, data: { received: true } });
-    expect(mockPrisma.pago.upsert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalledWith({
+      where: { turnoId, estado: { not: 'APROBADO' } },
+      data: expect.objectContaining({ estado: 'APROBADO', mpPaymentId: paymentId }),
+    });
+    expect(mockPrisma.pago.findUnique).toHaveBeenCalledWith({
       where: { turnoId },
-      update: expect.objectContaining({ estado: 'APROBADO', mpPaymentId: paymentId }),
-      create: expect.objectContaining({ turnoId, estado: 'APROBADO', mpPaymentId: paymentId }),
-    }));
+    });
     expect(mockPrisma.turno.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: turnoId },
       data: { estado: 'CONFIRMADO' },
@@ -119,28 +151,108 @@ describe('POST /pagos/webhook payment approval state guards', () => {
   });
 
   it('approves payment for an already CONFIRMADO turno and keeps it confirmed', async () => {
-    mockPrisma.turno.findUnique.mockResolvedValue({ estado: 'CONFIRMADO' });
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('CONFIRMADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: null,
+    }));
     mockUpdatedTurno('CONFIRMADO');
 
     const res = await postApprovedWebhook(app);
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.pago.upsert).toHaveBeenCalled();
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalled();
     expect(mockPrisma.turno.update).toHaveBeenCalledWith(expect.objectContaining({
       data: { estado: 'CONFIRMADO' },
     }));
   });
 
+  it('creates an approved payment when no payment row exists yet', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', null));
+    mockPrisma.pago.create.mockResolvedValue({ id: 'pago-created', cuponId: null });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        turnoId,
+        monto: 420,
+        montoNeto: 420,
+        estado: 'APROBADO',
+        mpPaymentId: paymentId,
+      }),
+    });
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores duplicate approved webhooks when the payment is already approved', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('CONFIRMADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'APROBADO',
+      cuponId: 'cupon-1',
+    }));
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.create).not.toHaveBeenCalled();
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it('increments coupon usage only when the payment newly transitions to approved', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: 'cupon-1',
+    }));
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: 'cupon-1', estado: 'APROBADO' });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.cupon.update).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.cupon.update).toHaveBeenCalledWith({
+      where: { id: 'cupon-1' },
+      data: { usosActuales: { increment: 1 } },
+    });
+  });
+
+  it('does not run side effects when a concurrent approval already won the conditional update', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: 'cupon-1',
+    }));
+    mockPrisma.pago.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
   it.each(['CANCELADO', 'COMPLETADO', 'AUSENTE'] as const)(
     'ignores approved payments for %s turnos without approving revenue',
     async (estado) => {
-      mockPrisma.turno.findUnique.mockResolvedValue({ estado });
+      mockPrisma.turno.findUnique.mockResolvedValue(makeTurno(estado));
 
       const res = await postApprovedWebhook(app);
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ success: true, data: { received: true } });
-      expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
+      expect(mockPrisma.pago.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.pago.create).not.toHaveBeenCalled();
       expect(mockPrisma.turno.update).not.toHaveBeenCalled();
       expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
       expect(mockSendNotification).not.toHaveBeenCalled();
@@ -158,7 +270,8 @@ describe('POST /pagos/webhook payment approval state guards', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true, data: { received: true } });
-    expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.create).not.toHaveBeenCalled();
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
     expect(mockSendNotification).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
