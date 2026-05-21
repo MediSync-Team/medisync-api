@@ -19,6 +19,7 @@ import { getProfesionalIdByUsuario } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { validateRequest } from '../utils/validation';
 import { DEFAULT_APPOINTMENT_DURATION_MIN, findMatchingAvailability, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
+import { acquireAppointmentDayLock } from '../utils/appointment-locks';
 import { canTransitionTurnoState } from '../utils/turno-state';
 import {
   formatClinicDateTimeEs,
@@ -399,6 +400,8 @@ router.post(
     let result;
     try {
       result = await prisma.$transaction(async (tx) => {
+        await acquireAppointmentDayLock(tx, profesionalId, clinicParts.dateKey);
+
         const { start, end } = getClinicDayBoundsForInstant(fechaHoraDate);
         const turnosDelDia = await tx.turno.findMany({
           where: {
@@ -607,6 +610,8 @@ router.post('/:id/reprogramar', authMiddleware(), asyncHandler(async (req: AuthR
   }
 
   const turnoActualizado = await prisma.$transaction(async (tx) => {
+    await acquireAppointmentDayLock(tx, turno.profesionalId, nuevaClinicParts.dateKey);
+
     const { start, end } = getClinicDayBoundsForInstant(nuevaFechaHora);
     const turnosDelDia = await tx.turno.findMany({
       where: {
@@ -1313,6 +1318,9 @@ router.post('/confirmar-reserva', [
     : null;
 
   const turno = await prisma.$transaction(async (tx) => {
+    const verificationClinicParts = getClinicDateTimeParts(verification.fechaHora);
+    await acquireAppointmentDayLock(tx, verification.profesionalId, verificationClinicParts.dateKey);
+
     const { start, end } = getClinicDayBoundsForInstant(verification.fechaHora);
     const turnosDelDia = await tx.turno.findMany({
       where: {

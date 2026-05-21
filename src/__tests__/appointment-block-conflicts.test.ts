@@ -4,6 +4,7 @@ import {
   findMatchingAvailability,
   hasBlockConflict,
 } from '../utils/appointment-conflicts';
+import { buildAppointmentDayLockKey } from '../utils/appointment-locks';
 
 describe('availability block interval overlap', () => {
   it('detects partial overlap when the appointment starts before the block', () => {
@@ -20,6 +21,26 @@ describe('availability block interval overlap', () => {
 
   it('treats full-day blocks as conflicts', () => {
     expect(hasBlockConflict([{ horaInicio: null, horaFin: null }], 10 * 60, 30)).toBe(true);
+  });
+});
+
+describe('appointment advisory lock keys', () => {
+  it('uses the same key for the same professional and clinic date', () => {
+    expect(buildAppointmentDayLockKey('prof-1', '2026-05-18')).toBe(
+      buildAppointmentDayLockKey('prof-1', '2026-05-18')
+    );
+  });
+
+  it('uses a different key for a different clinic date', () => {
+    expect(buildAppointmentDayLockKey('prof-1', '2026-05-18')).not.toBe(
+      buildAppointmentDayLockKey('prof-1', '2026-05-19')
+    );
+  });
+
+  it('uses a different key for a different professional', () => {
+    expect(buildAppointmentDayLockKey('prof-1', '2026-05-18')).not.toBe(
+      buildAppointmentDayLockKey('prof-2', '2026-05-18')
+    );
   });
 });
 

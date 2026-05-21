@@ -4,6 +4,7 @@ import { describe, expect, it, beforeEach, afterEach, jest } from '@jest/globals
 import { generateToken } from '../middleware/auth.middleware';
 
 const mockTx = {
+  $executeRaw: jest.fn() as any,
   turno: {
     findMany: jest.fn() as any,
     create: jest.fn() as any,
@@ -17,6 +18,8 @@ const mockPrisma = {
   },
   paciente: {
     findUnique: jest.fn() as any,
+    findFirst: jest.fn() as any,
+    create: jest.fn() as any,
   },
   disponibilidad: {
     findMany: jest.fn() as any,
@@ -343,6 +346,8 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.$transaction.mockReset();
     mockPrisma.profesional.findUnique.mockReset();
     mockPrisma.paciente.findUnique.mockReset();
+    mockPrisma.paciente.findFirst.mockReset();
+    mockPrisma.paciente.create.mockReset();
     mockPrisma.disponibilidad.findMany.mockReset();
     mockPrisma.bloqueoDisponibilidad.findMany.mockReset();
     mockPrisma.turno.count.mockReset();
@@ -355,9 +360,11 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.bookingVerification.create.mockReset();
     mockPrisma.bookingVerification.findUnique.mockReset();
     mockPrisma.bookingVerification.delete.mockReset();
+    mockTx.$executeRaw.mockReset();
     mockTx.turno.findMany.mockReset();
     mockTx.turno.create.mockReset();
     mockTx.turno.update.mockReset();
+    mockTx.$executeRaw.mockResolvedValue(undefined);
   });
 
   it.each(['PROFESIONAL', 'ADMIN', 'CLINICA'] as const)('rejects %s tokens before booking logic', async (rol) => {
@@ -405,6 +412,23 @@ describe('POST /turnos/reservar', () => {
     expect(mockTx.turno.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ pacienteId }),
     }));
+  });
+
+  it('acquires the professional-day advisory lock before booking conflict reads', async () => {
+    const date = futureSlot();
+    setHappyPathMocks(date);
+
+    const res = await request(app)
+      .post('/turnos/reservar')
+      .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
+      .send(bookingPayload(date))
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(201);
+    expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(mockTx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mockTx.turno.findMany.mock.invocationCallOrder[0]
+    );
   });
 
   it('rejects bookings outside active availability', async () => {
@@ -1197,6 +1221,24 @@ describe('POST /turnos/reservar', () => {
   });
 
   describe('Reprogramming modality side effects', () => {
+    it('acquires the target professional-day advisory lock before reprogramming conflict reads', async () => {
+      const { newDate } = setReprogramHappyPathMocks({
+        currentModalidad: 'PRESENCIAL',
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-1/reprogramar')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({ fechaHora: newDate.toISOString(), modalidad: 'PRESENCIAL' })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(mockTx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        mockTx.turno.findMany.mock.invocationCallOrder[0]
+      );
+    });
+
     it('creates a video link and clears location when changing from in-person to virtual', async () => {
       const { newDate } = setReprogramHappyPathMocks({
         currentModalidad: 'PRESENCIAL',
@@ -1341,6 +1383,48 @@ describe('POST /turnos/reservar', () => {
           apellido: 'Perez',
         })
       }));
+    });
+
+    it('acquires the professional-day advisory lock before legacy guest confirmation conflict reads', async () => {
+      process.env.ENABLE_GUEST_BOOKING = 'true';
+
+      const date = futureSlot();
+      const token = 'a'.repeat(32);
+      mockPrisma.bookingVerification.findUnique.mockResolvedValue({
+        token,
+        email: 'guest@test.com',
+        nombre: 'Juan',
+        apellido: 'Perez',
+        telefonoPaciente: '123456789',
+        profesionalId,
+        fechaHora: date,
+        modalidad: 'PRESENCIAL',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: pacienteId });
+      mockTx.turno.findMany.mockResolvedValue([]);
+      mockTx.turno.create.mockResolvedValue({
+        id: 'turno-guest-1',
+        profesionalId,
+        pacienteId,
+        fechaHora: date,
+        modalidad: 'PRESENCIAL',
+        duracionMin: 30,
+        estado: 'RESERVADO',
+      });
+      mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockTx));
+      mockPrisma.bookingVerification.delete.mockResolvedValue({});
+
+      const res = await request(app)
+        .post('/turnos/confirmar-reserva')
+        .send({ token })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(mockTx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        mockTx.turno.findMany.mock.invocationCallOrder[0]
+      );
     });
   });
 });
