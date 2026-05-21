@@ -95,21 +95,6 @@ router.post(
     }
 
     const precio = Number(turno.profesional.precioConsulta);
-
-    if (precio <= 0) {
-      if (turno.estado === 'RESERVADO') {
-        await prisma.turno.update({
-          where: { id: turnoId },
-          data: { estado: 'CONFIRMADO' },
-        });
-      }
-      res.json(success({
-        necesitaPago: false,
-        mensaje: 'Turno confirmado sin pago'
-      }));
-      return;
-    }
-
     let precioFinal = precio;
     let cuponId: string | null = null;
     let montoDescuento: number | null = null;
@@ -120,6 +105,53 @@ router.post(
       precioFinal = couponResult.montoFinal;
       cuponId = couponResult.cuponId;
       montoDescuento = couponResult.montoDescuento;
+    }
+
+    if (precioFinal <= 0) {
+      await prisma.$transaction(async (tx) => {
+        const existingPago = await tx.pago.findUnique({ where: { turnoId } });
+        const wasAlreadyApproved = existingPago?.estado === 'APROBADO';
+
+        await tx.pago.upsert({
+          where: { turnoId },
+          update: {
+            monto: 0,
+            montoNeto: 0,
+            estado: 'APROBADO',
+            cuponId,
+            montoDescuento,
+          },
+          create: {
+            turnoId,
+            monto: 0,
+            montoNeto: 0,
+            estado: 'APROBADO',
+            cuponId,
+            montoDescuento,
+          },
+        });
+
+        if (cuponId && !wasAlreadyApproved) {
+          await tx.cupon.update({
+            where: { id: cuponId },
+            data: { usosActuales: { increment: 1 } },
+          });
+        }
+
+        if (turno.estado === 'RESERVADO') {
+          await tx.turno.update({
+            where: { id: turnoId },
+            data: { estado: 'CONFIRMADO' },
+          });
+        }
+      });
+
+      res.json(success({
+        necesitaPago: false,
+        mensaje: 'Turno confirmado sin pago',
+        estado: 'APROBADO',
+      }));
+      return;
     }
 
     const preferenceData = {

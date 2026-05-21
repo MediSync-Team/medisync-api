@@ -15,6 +15,7 @@ const mockPrisma = {
   cupon: {
     update: jest.fn() as any,
   },
+  $transaction: jest.fn() as any,
 };
 
 jest.mock('../lib/prisma', () => ({
@@ -31,6 +32,7 @@ jest.mock('../utils/coupon', () => ({
 }));
 
 import { pagosRouter } from '../routes/pagos.routes';
+import { validateAndApplyCoupon } from '../utils/coupon';
 
 const pacienteUsuarioId = '22222222-2222-4222-8222-222222222222';
 const turnoId = '33333333-3333-4333-8333-333333333333';
@@ -60,6 +62,7 @@ function mockTurno(estado: string, precioConsulta = 420) {
   mockPrisma.turno.findUnique.mockResolvedValue({
     id: turnoId,
     estado,
+    profesionalId: 'prof-1',
     paciente: { usuarioId: pacienteUsuarioId, email: 'paciente@test.com' },
     profesional: {
       id: 'prof-1',
@@ -77,8 +80,12 @@ describe('payment routes appointment state consistency', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (validateAndApplyCoupon as jest.MockedFunction<typeof validateAndApplyCoupon>).mockReset();
     mockPrisma.pago.findUnique.mockResolvedValue(null);
     mockPrisma.turno.update.mockResolvedValue({ id: turnoId, estado: 'CONFIRMADO' });
+    mockPrisma.pago.upsert.mockResolvedValue({ id: 'pago-1', estado: 'APROBADO' });
+    mockPrisma.cupon.update.mockResolvedValue({ id: 'cupon-1' });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
   });
 
   it('confirms a RESERVADO turno when payment is approved', async () => {
@@ -151,7 +158,21 @@ describe('payment routes appointment state consistency', () => {
       .timeout({ deadline: 1000 });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ necesitaPago: false });
+    expect(res.body.data).toMatchObject({ necesitaPago: false, estado: 'APROBADO' });
+    expect(mockPrisma.pago.upsert).toHaveBeenCalledWith({
+      where: { turnoId },
+      update: expect.objectContaining({
+        monto: 0,
+        montoNeto: 0,
+        estado: 'APROBADO',
+      }),
+      create: expect.objectContaining({
+        turnoId,
+        monto: 0,
+        montoNeto: 0,
+        estado: 'APROBADO',
+      }),
+    });
     expect(mockPrisma.turno.update).toHaveBeenCalledWith({
       where: { id: turnoId },
       data: { estado: 'CONFIRMADO' },
@@ -169,6 +190,97 @@ describe('payment routes appointment state consistency', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ necesitaPago: false });
+    expect(mockPrisma.pago.upsert).toHaveBeenCalledWith({
+      where: { turnoId },
+      update: expect.objectContaining({ estado: 'APROBADO' }),
+      create: expect.objectContaining({ estado: 'APROBADO' }),
+    });
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+  });
+
+  it('confirms a RESERVADO turno with an approved zero-total coupon without creating a Mercado Pago preference', async () => {
+    mockTurno('RESERVADO', 420);
+    (validateAndApplyCoupon as jest.MockedFunction<typeof validateAndApplyCoupon>).mockResolvedValue({
+      cuponId: 'cupon-1',
+      tipo: 'PORCENTAJE',
+      valor: 100,
+      descripcion: '100% off',
+      montoOriginal: 420,
+      montoDescuento: 420,
+      montoFinal: 0,
+    });
+    const fetchSpy = jest.spyOn(global as any, 'fetch').mockImplementation(jest.fn());
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId, cuponCodigo: 'FREE100' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      necesitaPago: false,
+      estado: 'APROBADO',
+    });
+    expect(validateAndApplyCoupon).toHaveBeenCalledWith('FREE100', turnoId, 'prof-1', 420);
+    expect(mockPrisma.pago.upsert).toHaveBeenCalledWith({
+      where: { turnoId },
+      update: expect.objectContaining({
+        monto: 0,
+        montoNeto: 0,
+        estado: 'APROBADO',
+        cuponId: 'cupon-1',
+        montoDescuento: 420,
+      }),
+      create: expect.objectContaining({
+        turnoId,
+        monto: 0,
+        montoNeto: 0,
+        estado: 'APROBADO',
+        cuponId: 'cupon-1',
+        montoDescuento: 420,
+      }),
+    });
+    expect(mockPrisma.cupon.update).toHaveBeenCalledWith({
+      where: { id: 'cupon-1' },
+      data: { usosActuales: { increment: 1 } },
+    });
+    expect(mockPrisma.turno.update).toHaveBeenCalledWith({
+      where: { id: turnoId },
+      data: { estado: 'CONFIRMADO' },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+
+  it('does not increment coupon usage again when zero-total payment is already approved', async () => {
+    mockTurno('CONFIRMADO', 420);
+    mockPrisma.turno.findUnique.mockResolvedValue({
+      id: turnoId,
+      estado: 'CONFIRMADO',
+      paciente: { usuarioId: pacienteUsuarioId, email: 'paciente@test.com' },
+      profesional: {
+        id: 'prof-1',
+        nombre: 'Pedro',
+        apellido: 'Franchetti',
+        precioConsulta: 420,
+        especialidad: { nombre: 'Clinica medica' },
+      },
+      pago: { estado: 'APROBADO', cuponId: 'cupon-1' },
+    });
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId, cuponCodigo: 'FREE100' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ necesitaPago: false });
+    expect(validateAndApplyCoupon).not.toHaveBeenCalled();
+    expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
   });
 
