@@ -220,6 +220,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const turnoId = payment.external_reference;
 
       if (turnoId && payment.status === 'approved') {
+        // Pago approval, coupon usage, and turno confirmation must commit together.
         const approved = await prisma.$transaction(async (tx) => {
           const turnoActual = await tx.turno.findUnique({
             where: { id: turnoId },

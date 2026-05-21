@@ -108,6 +108,7 @@ async function postApprovedWebhook(app: ReturnType<typeof makeApp>) {
 describe('POST /pagos/webhook payment approval state guards', () => {
   const app = makeApp();
   let warnSpy: jest.SpiedFunction<typeof console.warn>;
+  let errorSpy: jest.SpiedFunction<typeof console.error>;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,10 +120,12 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     mockPrisma.pago.updateMany.mockResolvedValue({ count: 1 });
     mockUpdatedTurno();
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   it('approves payment and confirms a RESERVADO turno', async () => {
@@ -265,6 +268,43 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
     expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
     expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not notify if turno confirmation fails after updating an existing payment', async () => {
+    const dbError = new Error('turno update failed');
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: 'cupon-1',
+    }));
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: 'cupon-1', estado: 'APROBADO' });
+    mockPrisma.turno.update.mockRejectedValue(dbError);
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).toHaveBeenCalled();
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error procesando webhook:', dbError);
+  });
+
+  it('does not notify if turno confirmation fails after creating an approved payment', async () => {
+    const dbError = new Error('turno update failed');
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', null));
+    mockPrisma.pago.create.mockResolvedValue({ id: 'pago-created', cuponId: null });
+    mockPrisma.turno.update.mockRejectedValue(dbError);
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.create).toHaveBeenCalled();
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error procesando webhook:', dbError);
   });
 
   it.each(['CANCELADO', 'COMPLETADO', 'AUSENTE'] as const)(
