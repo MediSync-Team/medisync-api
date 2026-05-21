@@ -1,19 +1,23 @@
 import prisma from '../lib/prisma';
 import { notifyWaitlistForReleasedSlot } from './waitlist.service';
 import { syncTurnoCancelled, syncTurnoCancelledForPaciente } from './calendar-sync.service';
+import { getAppointmentEnd } from '../utils/appointment-conflicts';
+
+const UNPAID_RESERVATION_GRACE_MS = 60 * 60 * 1000;
 
 /**
  * Clean up stale RESERVADO appointments where the professional requires payment,
- * the checkout was abandoned (no approved payment after 15 minutes),
+ * the checkout was abandoned (no approved payment one hour after the appointment ends),
  * releasing slots and notifying the waitlist and Google Calendar.
  */
 export async function cleanupStaleReservations() {
-  const cutoff = new Date(Date.now() - 15 * 60 * 1000); // 15 minutes ago
+  const now = new Date();
+  const broadCutoff = new Date(now.getTime() - UNPAID_RESERVATION_GRACE_MS);
 
   const staleTurnos = await prisma.turno.findMany({
     where: {
       estado: 'RESERVADO',
-      createdAt: { lt: cutoff },
+      fechaHora: { lt: broadCutoff },
       profesional: {
         precioConsulta: { gt: 0 },
       },
@@ -28,11 +32,17 @@ export async function cleanupStaleReservations() {
     },
   });
 
-  if (staleTurnos.length === 0) return;
+  const expiredTurnos = staleTurnos.filter((turno) => {
+    const appointmentEnd = getAppointmentEnd(turno.fechaHora, turno.duracionMin);
+    const eligibleAt = new Date(appointmentEnd.getTime() + UNPAID_RESERVATION_GRACE_MS);
+    return eligibleAt <= now;
+  });
 
-  console.log(`[cleanup] Found ${staleTurnos.length} stale reservations to cancel`);
+  if (expiredTurnos.length === 0) return;
 
-  for (const turno of staleTurnos) {
+  console.log(`[cleanup] Found ${expiredTurnos.length} expired unpaid reservations to cancel`);
+
+  for (const turno of expiredTurnos) {
     try {
       const updated = await prisma.$transaction(async (tx) => {
         const result = await tx.turno.updateMany({

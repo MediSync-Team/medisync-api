@@ -144,10 +144,13 @@ cuponesRouter.post(
 
     const turno = await prisma.turno.findUnique({
       where: { id: turnoId },
-      include: { profesional: true },
+      include: { paciente: true, profesional: true },
     });
     if (!turno) {
       throw new AppError(404, 'NOT_FOUND', 'Turno no encontrado');
+    }
+    if (!turno.paciente || turno.paciente.usuarioId !== req.user!.userId) {
+      throw new AppError(403, 'FORBIDDEN', 'Sin permisos para validar cupones de este turno');
     }
 
     const precioBase = Number(turno.profesional?.precioConsulta || 0);
