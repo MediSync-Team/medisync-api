@@ -4,12 +4,10 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
+import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
 import {
   addDaysToClinicDate,
-  clinicDateTimeToUtcDate,
   formatClinicDateKey,
-  getClinicDateOnlyUtc,
   getClinicDayBoundsFromDateString,
   getClinicWeekdayFromDateString,
 } from '../utils/clinic-time';
@@ -380,65 +378,11 @@ router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
   if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
   }
-  const diaSemana = getClinicWeekdayFromDateString(fecha);
-  const fechaDate = getClinicDateOnlyUtc(fecha);
-  const { start: startOfDay, end: endOfDay } = getClinicDayBoundsFromDateString(fecha);
-
-  const [disponibilidad, turnosOcupados, bloqueos] = await Promise.all([
-    prisma.disponibilidad.findMany({
-      where: { profesionalId: req.params.id, diaSemana, activo: true },
-    }),
-    prisma.turno.findMany({
-      where: {
-        profesionalId: req.params.id,
-        fechaHora: { gte: startOfDay, lt: endOfDay },
-        estado: { notIn: ['CANCELADO'] },
-      },
-    }),
-    prisma.bloqueoDisponibilidad.findMany({
-      where: {
-        profesionalId: req.params.id,
-        fechaInicio: { lte: fechaDate },
-        fechaFin: { gte: fechaDate },
-      },
-    }),
-  ]);
-
-  // Check for full-day bloqueo
-  const bloqueoDiaTodo = bloqueos.some(b => !b.horaInicio && !b.horaFin);
-
-  const slotsMap = new Map<string, { disponible: boolean; lugarAtencion: string | null }>();
-
-  if (!bloqueoDiaTodo) {
-    disponibilidad.forEach((disp) => {
-      if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
-
-      let [h, m] = disp.horaInicio.split(':').map(Number);
-      const [hf, mf] = disp.horaFin.split(':').map(Number);
-
-      while (h < hf || (h === hf && m < mf)) {
-        const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-        const slotDate = clinicDateTimeToUtcDate(fecha, horaStr);
-        const slotMinutes = h * 60 + m;
-
-        const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
-
-        // Check if slot falls within a partial bloqueo
-        const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
-
-        if (!slotsMap.has(horaStr)) {
-          slotsMap.set(horaStr, { disponible: !ocupado && !bloqueado, lugarAtencion: disp.lugarAtencion ?? null });
-        }
-
-        m += 30;
-        if (m >= 60) { h++; m -= 60; }
-      }
-    });
-  }
-
-  const slots = Array.from(slotsMap.entries())
-    .map(([hora, { disponible, lugarAtencion }]) => ({ hora, disponible, lugarAtencion }))
-    .sort((a, b) => a.hora.localeCompare(b.hora));
+  const slots = await getAvailableSlotsForProfessional({
+    profesionalId: req.params.id,
+    fecha,
+    modalidad: modalidad ? String(modalidad) : undefined,
+  });
 
   res.json(success(slots));
 }));

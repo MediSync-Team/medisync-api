@@ -755,10 +755,10 @@ describe('POST /turnos/reservar', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
-      { hora: '09:00', disponible: true },
-      { hora: '09:30', disponible: false },
-      { hora: '10:00', disponible: false },
-      { hora: '10:30', disponible: true },
+      { hora: '09:00', disponible: true, lugarAtencion: null },
+      { hora: '09:30', disponible: false, lugarAtencion: null },
+      { hora: '10:00', disponible: false, lugarAtencion: null },
+      { hora: '10:30', disponible: true, lugarAtencion: null },
     ]);
   });
 
@@ -768,7 +768,7 @@ describe('POST /turnos/reservar', () => {
         horaInicio: '09:30',
         horaFin: '11:00',
         modalidad: 'PRESENCIAL',
-        lugarAtencion: null,
+        lugarAtencion: 'Consultorio legacy',
         diaSemana: 1,
         activo: true,
       },
@@ -784,10 +784,81 @@ describe('POST /turnos/reservar', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
-      { hora: '09:30', disponible: true },
-      { hora: '10:00', disponible: false },
-      { hora: '10:30', disponible: false },
+      { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio legacy' },
+      { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio legacy' },
+      { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio legacy' },
     ]);
+  });
+
+  it('returns identical slot data from legacy turnos and professional endpoints', async () => {
+    const disponibilidad = [
+      {
+        horaInicio: '09:30',
+        horaFin: '11:00',
+        modalidad: 'AMBOS',
+        lugarAtencion: 'Consultorio compartido',
+        diaSemana: 1,
+        activo: true,
+      },
+    ];
+    const turnosOcupados = [
+      { fechaHora: clinicDateTimeToUtcDate('2026-05-18', '10:30'), duracionMin: 30, estado: 'RESERVADO' },
+    ];
+    const bloqueos = [
+      { horaInicio: '09:45', horaFin: '10:15' },
+    ];
+
+    mockPrisma.disponibilidad.findMany.mockResolvedValue(disponibilidad);
+    mockPrisma.turno.findMany.mockResolvedValue(turnosOcupados);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue(bloqueos);
+
+    const legacyRes = await request(app)
+      .get(`/turnos/profesional/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=VIRTUAL`)
+      .timeout({ deadline: 1000 });
+
+    mockPrisma.disponibilidad.findMany.mockResolvedValue(disponibilidad);
+    mockPrisma.turno.findMany.mockResolvedValue(turnosOcupados);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue(bloqueos);
+
+    const professionalRes = await request(app)
+      .get(`/profesionales/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=VIRTUAL`)
+      .timeout({ deadline: 1000 });
+
+    expect(legacyRes.status).toBe(200);
+    expect(professionalRes.status).toBe(200);
+    expect(legacyRes.body.data).toEqual(professionalRes.body.data);
+    expect(legacyRes.body.data).toEqual([
+      { hora: '09:30', disponible: false, lugarAtencion: 'Consultorio compartido' },
+      { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio compartido' },
+      { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio compartido' },
+    ]);
+  });
+
+  it.each([
+    ['turnos legacy', `/turnos/profesional/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`],
+    ['professional', `/profesionales/${profesionalId}/slots-disponibles?fecha=2026-05-18&modalidad=PRESENCIAL`],
+  ])('returns no slots for a full-day block on the %s endpoint', async (_label, path) => {
+    mockPrisma.disponibilidad.findMany.mockResolvedValue([
+      {
+        horaInicio: '09:30',
+        horaFin: '11:00',
+        modalidad: 'PRESENCIAL',
+        lugarAtencion: 'Consultorio',
+        diaSemana: 1,
+        activo: true,
+      },
+    ]);
+    mockPrisma.turno.findMany.mockResolvedValue([]);
+    mockPrisma.bloqueoDisponibilidad.findMany.mockResolvedValue([
+      { horaInicio: null, horaFin: null },
+    ]);
+
+    const res = await request(app)
+      .get(path)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
   });
 
   it('marks professional slots unavailable when they partially overlap blocks', async () => {

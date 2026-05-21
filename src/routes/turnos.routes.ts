@@ -10,6 +10,7 @@ import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../ser
 import { analyzePreconsulta } from '../services/preconsulta.service';
 import { createNotification } from '../services/notification.service';
 import { issueVideoTicket } from '../services/video-room.service';
+import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
 import {
   syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
   syncTurnoCreatedForPaciente, syncTurnoRescheduledForPaciente, syncTurnoCancelledForPaciente,
@@ -20,14 +21,12 @@ import { validateRequest } from '../utils/validation';
 import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
 import { canTransitionTurnoState } from '../utils/turno-state';
 import {
-  clinicDateTimeToUtcDate,
   formatClinicDateTimeEs,
   getClinicDateOnlyUtc,
   getClinicDateTimeParts,
   getClinicDayBoundsFromDateString,
   getClinicDayBoundsForInstant,
   getClinicMonthBounds,
-  getClinicWeekdayFromDateString,
 } from '../utils/clinic-time';
 import rateLimit from 'express-rate-limit';
 
@@ -205,58 +204,11 @@ router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (
   if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
   }
-  const diaSemana = getClinicWeekdayFromDateString(fechaStr);
-
-  const { start: startOfDay, end: endOfDay } = getClinicDayBoundsFromDateString(fechaStr);
-  const fechaDate = getClinicDateOnlyUtc(fechaStr);
-
-  const [disponibilidad, turnosOcupados, bloqueos] = await Promise.all([
-    prisma.disponibilidad.findMany({
-      where: { profesionalId: req.params.profesionalId, diaSemana, activo: true },
-    }),
-    prisma.turno.findMany({
-      where: {
-        profesionalId: req.params.profesionalId,
-        fechaHora: { gte: startOfDay, lt: endOfDay },
-        estado: { notIn: ['CANCELADO'] },
-      },
-    }),
-    prisma.bloqueoDisponibilidad.findMany({
-      where: {
-        profesionalId: req.params.profesionalId,
-        fechaInicio: { lte: fechaDate },
-        fechaFin: { gte: fechaDate },
-      },
-    }),
-  ]);
-
-  const slotsMap = new Map<string, boolean>();
-
-  disponibilidad.forEach((disp) => {
-    if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
-
-    let [h, m] = disp.horaInicio.split(':').map(Number);
-    const [hf, mf] = disp.horaFin.split(':').map(Number);
-
-    while (h < hf || (h === hf && m < mf)) {
-      const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      const slotDate = clinicDateTimeToUtcDate(fechaStr, horaStr);
-      const slotMinutes = h * 60 + m;
-
-      const ocupado = hasAppointmentConflict(turnosOcupados, slotDate);
-      const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
-      if (!slotsMap.has(horaStr)) {
-        slotsMap.set(horaStr, !ocupado && !bloqueado);
-      }
-
-      m += 30;
-      if (m >= 60) { h++; m -= 60; }
-    }
+  const slots = await getAvailableSlotsForProfessional({
+    profesionalId: req.params.profesionalId,
+    fecha: fechaStr,
+    modalidad: modalidad ? String(modalidad) : undefined,
   });
-
-  const slots = Array.from(slotsMap.entries())
-    .map(([hora, disponible]) => ({ hora, disponible }))
-    .sort((a, b) => a.hora.localeCompare(b.hora));
 
   res.json(success(slots));
 }));
