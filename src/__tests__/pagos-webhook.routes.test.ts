@@ -14,7 +14,9 @@ const mockPrisma = {
     updateMany: jest.fn() as any,
   },
   cupon: {
+    findUnique: jest.fn() as any,
     update: jest.fn() as any,
+    updateMany: jest.fn() as any,
   },
   $transaction: jest.fn() as any,
 };
@@ -120,6 +122,9 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     mockPrisma.pago.create.mockResolvedValue({ id: 'pago-1', cuponId: null });
     mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: null, estado: 'APROBADO' });
     mockPrisma.pago.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.cupon.findUnique.mockResolvedValue({ id: 'cupon-1', maxUsos: null, usosActuales: 0 });
+    mockPrisma.cupon.update.mockResolvedValue({ id: 'cupon-1' });
+    mockPrisma.cupon.updateMany.mockResolvedValue({ count: 1 });
     mockUpdatedTurno();
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -229,6 +234,55 @@ describe('POST /pagos/webhook payment approval state guards', () => {
       where: { id: 'cupon-1' },
       data: { usosActuales: { increment: 1 } },
     });
+  });
+
+  it('does not over-increment an exhausted coupon for an already-paid webhook', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: 'cupon-1',
+    }));
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: 'cupon-1', estado: 'APROBADO' });
+    mockPrisma.cupon.findUnique.mockResolvedValue({ id: 'cupon-1', maxUsos: 1, usosActuales: 1 });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[pagos] Coupon capacity exhausted after paid approval',
+      expect.objectContaining({ turnoId, pagoId: 'pago-1', cuponId: 'cupon-1', mpPaymentId: paymentId, redemption: 'exhausted' })
+    );
+  });
+
+  it('does not over-increment when a coupon capacity race loses during paid approval', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: 'cupon-1',
+    }));
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: 'cupon-1', estado: 'APROBADO' });
+    mockPrisma.cupon.findUnique
+      .mockResolvedValueOnce({ id: 'cupon-1', maxUsos: 1, usosActuales: 0 })
+      .mockResolvedValueOnce({ id: 'cupon-1', maxUsos: 1, usosActuales: 1 });
+    mockPrisma.cupon.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.cupon.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[pagos] Coupon capacity exhausted after paid approval',
+      expect.objectContaining({ turnoId, pagoId: 'pago-1', cuponId: 'cupon-1', mpPaymentId: paymentId, redemption: 'exhausted' })
+    );
   });
 
   it('does not run side effects when a concurrent approval already won the conditional update', async () => {

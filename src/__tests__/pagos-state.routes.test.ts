@@ -15,7 +15,9 @@ const mockPrisma = {
     upsert: jest.fn() as any,
   },
   cupon: {
+    findUnique: jest.fn() as any,
     update: jest.fn() as any,
+    updateMany: jest.fn() as any,
   },
   $transaction: jest.fn() as any,
 };
@@ -88,7 +90,9 @@ describe('payment routes appointment state consistency', () => {
     mockPrisma.pago.update.mockResolvedValue({ id: 'pago-1', estado: 'PENDIENTE' });
     mockPrisma.turno.update.mockResolvedValue({ id: turnoId, estado: 'CONFIRMADO' });
     mockPrisma.pago.upsert.mockResolvedValue({ id: 'pago-1', estado: 'APROBADO' });
+    mockPrisma.cupon.findUnique.mockResolvedValue({ id: 'cupon-1', maxUsos: null, usosActuales: 0 });
     mockPrisma.cupon.update.mockResolvedValue({ id: 'cupon-1' });
+    mockPrisma.cupon.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
     (global as any).fetch = jest.fn(async () => ({
       ok: true,
@@ -290,6 +294,31 @@ describe('payment routes appointment state consistency', () => {
     expect(validateAndApplyCoupon).not.toHaveBeenCalled();
     expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
     expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects zero-total coupon confirmation when capacity is exhausted at redemption time', async () => {
+    mockTurno('RESERVADO', 420);
+    (validateAndApplyCoupon as jest.MockedFunction<typeof validateAndApplyCoupon>).mockResolvedValue({
+      cuponId: 'cupon-1',
+      tipo: 'PORCENTAJE',
+      valor: 100,
+      descripcion: '100% off',
+      montoOriginal: 420,
+      montoDescuento: 420,
+      montoFinal: 0,
+    });
+    mockPrisma.cupon.findUnique.mockResolvedValue({ id: 'cupon-1', maxUsos: 1, usosActuales: 1 });
+
+    const res = await request(app)
+      .post('/pagos/crear-preferencia')
+      .set('Authorization', `Bearer ${patientToken()}`)
+      .send({ turnoId, cuponCodigo: 'FREE100' })
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('COUPON_EXHAUSTED');
+    expect(mockPrisma.pago.upsert).not.toHaveBeenCalled();
     expect(mockPrisma.turno.update).not.toHaveBeenCalled();
   });
 

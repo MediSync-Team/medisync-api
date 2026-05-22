@@ -5,6 +5,7 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification } from '../utils/notifications';
 import { validateAndApplyCoupon } from '../utils/coupon';
+import { redeemCouponUse } from '../utils/coupon-redemption';
 import { isPayableTurnoState } from '../utils/turno-state';
 import { Prisma } from '@prisma/client';
 
@@ -112,6 +113,16 @@ router.post(
         const existingPago = await tx.pago.findUnique({ where: { turnoId } });
         const wasAlreadyApproved = existingPago?.estado === 'APROBADO';
 
+        if (cuponId && !wasAlreadyApproved) {
+          const redemption = await redeemCouponUse(tx, cuponId);
+          if (redemption === 'exhausted') {
+            throw new AppError(400, 'COUPON_EXHAUSTED', 'El cupón ha alcanzado el máximo de usos');
+          }
+          if (redemption === 'missing') {
+            throw new AppError(400, 'INVALID_COUPON', 'El código de cupón no es válido');
+          }
+        }
+
         await tx.pago.upsert({
           where: { turnoId },
           update: {
@@ -130,13 +141,6 @@ router.post(
             montoDescuento,
           },
         });
-
-        if (cuponId && !wasAlreadyApproved) {
-          await tx.cupon.update({
-            where: { id: cuponId },
-            data: { usosActuales: { increment: 1 } },
-          });
-        }
 
         if (turno.estado === 'RESERVADO') {
           await tx.turno.update({
@@ -273,6 +277,14 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const turnoId = payment.external_reference;
 
       if (turnoId && payment.status === 'approved') {
+        let couponRedemptionWarning: {
+          turnoId: string;
+          pagoId: string;
+          cuponId: string;
+          mpPaymentId: string;
+          redemption: 'exhausted' | 'missing';
+        } | null = null;
+
         // Pago approval, coupon usage, and turno confirmation must commit together.
         const approved = await prisma.$transaction(async (tx) => {
           const turnoActual = await tx.turno.findUnique({
@@ -341,10 +353,16 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
           // Keep coupon usage tied to the one webhook that newly approves the payment.
           if (pago.cuponId) {
-            await tx.cupon.update({
-              where: { id: pago.cuponId },
-              data: { usosActuales: { increment: 1 } },
-            });
+            const redemption = await redeemCouponUse(tx, pago.cuponId);
+            if (redemption !== 'incremented') {
+              couponRedemptionWarning = {
+                turnoId,
+                pagoId: pago.id,
+                cuponId: pago.cuponId,
+                mpPaymentId: String(paymentId),
+                redemption,
+              };
+            }
           }
 
           const turno = await tx.turno.update({
@@ -369,6 +387,10 @@ router.post('/webhook', asyncHandler(async (req, res) => {
         }
 
         const { pago, turno } = approved;
+
+        if (couponRedemptionWarning) {
+          console.warn('[pagos] Coupon capacity exhausted after paid approval', couponRedemptionWarning);
+        }
 
         try {
           await sendNotification(['EMAIL', 'WHATSAPP'], {
