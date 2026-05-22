@@ -53,6 +53,8 @@ function makeApp() {
 
 function mockApprovedPayment() {
   (global as any).fetch = jest.fn(async () => ({
+    ok: true,
+    status: 200,
     json: async () => ({
       external_reference: turnoId,
       status: 'approved',
@@ -283,7 +285,11 @@ describe('POST /pagos/webhook payment approval state guards', () => {
 
     const res = await postApprovedWebhook(app);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'WEBHOOK_PROCESSING_FAILED' },
+    });
     expect(mockPrisma.pago.updateMany).toHaveBeenCalled();
     expect(mockPrisma.cupon.update).toHaveBeenCalled();
     expect(mockPrisma.turno.update).toHaveBeenCalled();
@@ -299,7 +305,11 @@ describe('POST /pagos/webhook payment approval state guards', () => {
 
     const res = await postApprovedWebhook(app);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'WEBHOOK_PROCESSING_FAILED' },
+    });
     expect(mockPrisma.pago.create).toHaveBeenCalled();
     expect(mockPrisma.turno.update).toHaveBeenCalled();
     expect(mockPrisma.cupon.update).not.toHaveBeenCalled();
@@ -343,5 +353,97 @@ describe('POST /pagos/webhook payment approval state guards', () => {
       '[pagos] Ignoring approved payment for non-payable turno',
       expect.objectContaining({ turnoId, turnoEstado: 'MISSING', mpPaymentId: paymentId })
     );
+  });
+
+  it('returns 500 when Mercado Pago payment fetch rejects', async () => {
+    const fetchError = new Error('network down');
+    (global as any).fetch = jest.fn(async () => {
+      throw fetchError;
+    });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'WEBHOOK_PROCESSING_FAILED' },
+    });
+    expect(mockPrisma.turno.findUnique).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error procesando webhook:', fetchError);
+  });
+
+  it('returns 500 when Mercado Pago payment fetch returns non-OK', async () => {
+    (global as any).fetch = jest.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ message: 'unavailable' }),
+    }));
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'WEBHOOK_PROCESSING_FAILED' },
+    });
+    expect(mockPrisma.turno.findUnique).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error procesando webhook:', expect.any(Error));
+  });
+
+  it('returns 500 when Mercado Pago payment JSON cannot be parsed', async () => {
+    const parseError = new Error('invalid json');
+    (global as any).fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw parseError;
+      },
+    }));
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'WEBHOOK_PROCESSING_FAILED' },
+    });
+    expect(mockPrisma.turno.findUnique).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error procesando webhook:', parseError);
+  });
+
+  it('acknowledges webhook if notification fails after successful payment commit', async () => {
+    const notificationError = new Error('notification unavailable');
+    mockSendNotification.mockRejectedValueOnce(notificationError);
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('RESERVADO', {
+      id: 'pago-1',
+      turnoId,
+      estado: 'PENDIENTE',
+      cuponId: null,
+    }));
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, data: { received: true } });
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalled();
+    expect(mockPrisma.turno.update).toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('Error enviando notificación de pago aprobado:', notificationError);
+  });
+
+  it('returns 401 for invalid webhook signatures', async () => {
+    process.env.MP_WEBHOOK_SECRET = 'test-secret';
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_WEBHOOK_SIGNATURE' },
+    });
+    expect((global as any).fetch).not.toHaveBeenCalled();
   });
 });

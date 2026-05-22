@@ -265,6 +265,10 @@ router.post('/webhook', asyncHandler(async (req, res) => {
         },
       });
 
+      if (!response.ok) {
+        throw new Error(`Mercado Pago payment fetch failed with status ${response.status}`);
+      }
+
       const payment = await response.json() as MercadoPagoPaymentResponse;
       const turnoId = payment.external_reference;
 
@@ -366,25 +370,30 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
         const { pago, turno } = approved;
 
-        await sendNotification(['EMAIL', 'WHATSAPP'], {
-          event: 'TURNO_CONFIRMADO',
-          title: 'Pago aprobado — Turno confirmado',
-          message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
-          userEmail: turno.paciente?.email,
-          userPhone: turno.paciente?.telefono,
-          meta: {
-            turnoId: turno.id,
-            fechaHora: turno.fechaHora.toISOString(),
-            profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
-            modalidad: turno.modalidad,
-            lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
-            pagoId: pago.id,
-            mpPaymentId: paymentId,
-          },
-        });
+        try {
+          await sendNotification(['EMAIL', 'WHATSAPP'], {
+            event: 'TURNO_CONFIRMADO',
+            title: 'Pago aprobado — Turno confirmado',
+            message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
+            userEmail: turno.paciente?.email,
+            userPhone: turno.paciente?.telefono,
+            meta: {
+              turnoId: turno.id,
+              fechaHora: turno.fechaHora.toISOString(),
+              profesional: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido}`,
+              modalidad: turno.modalidad,
+              lugarAtencion: turno.profesional.lugarAtencion ?? undefined,
+              pagoId: pago.id,
+              mpPaymentId: paymentId,
+            },
+          });
+        } catch (err) {
+          console.error('Error enviando notificación de pago aprobado:', err);
+        }
       }
     } catch (err) {
       console.error('Error procesando webhook:', err);
+      throw new AppError(500, 'WEBHOOK_PROCESSING_FAILED', 'Error procesando webhook de pago');
     }
   }
 
