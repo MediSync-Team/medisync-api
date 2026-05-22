@@ -27,6 +27,7 @@ import { adminRouter } from './routes/admin.routes';
 import { chatRouter } from './routes/chat.routes';
 import { googleRouter } from './routes/google.routes';
 import { clinicasRouter } from './routes/clinicas.routes';
+import { obrasSocialesRouter } from './routes/obras-sociales.routes';
 import { certificadosRouter } from './routes/certificados.routes';
 import { cuponesRouter } from './routes/cupones.routes';
 import { suscripcionesRouter } from './routes/suscripciones.routes';
@@ -128,6 +129,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/google', googleRouter);
 app.use('/api/clinicas', clinicasRouter);
+app.use('/api/obras-sociales', obrasSocialesRouter);
 
 app.use(errorHandler);
 
