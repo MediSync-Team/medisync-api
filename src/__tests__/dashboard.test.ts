@@ -108,6 +108,45 @@ describe('Dashboard Logic', () => {
       expect(grouped['2024-01']).toBe(3000);
       expect(grouped['2024-02']).toBe(1500);
     });
+
+    it('should group payment dashboard revenue by appointment date, not payment creation date', () => {
+      const pagos = [
+        {
+          monto: 1000,
+          estado: 'APROBADO',
+          createdAt: new Date('2026-06-02T12:00:00.000Z'),
+          turno: { fechaHora: new Date('2026-05-18T13:00:00.000Z') },
+        },
+        {
+          monto: 2000,
+          estado: 'APROBADO',
+          createdAt: new Date('2026-05-29T12:00:00.000Z'),
+          turno: { fechaHora: new Date('2026-06-03T13:00:00.000Z') },
+        },
+        {
+          monto: 500,
+          estado: 'PENDIENTE',
+          createdAt: new Date('2026-05-29T12:00:00.000Z'),
+          turno: { fechaHora: new Date('2026-05-20T13:00:00.000Z') },
+        },
+      ];
+
+      const groupApprovedByAppointmentMonth = (payments: typeof pagos) => {
+        const grouped: Record<string, number> = {};
+        payments
+          .filter(p => p.estado === 'APROBADO')
+          .forEach((p) => {
+            const appointmentDate = p.turno.fechaHora;
+            const month = `${appointmentDate.getUTCFullYear()}-${String(appointmentDate.getUTCMonth() + 1).padStart(2, '0')}`;
+            grouped[month] = (grouped[month] || 0) + p.monto;
+          });
+        return grouped;
+      };
+
+      const grouped = groupApprovedByAppointmentMonth(pagos);
+      expect(grouped['2026-05']).toBe(1000);
+      expect(grouped['2026-06']).toBe(2000);
+    });
   });
 
   describe('Patient statistics', () => {

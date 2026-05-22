@@ -230,7 +230,12 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
     where: {
       turno: { profesionalId: profesional.id, fechaHora: { gte: defaultDesde } },
     },
-    select: { monto: true, montoNeto: true, estado: true, createdAt: true },
+    select: {
+      monto: true,
+      montoNeto: true,
+      estado: true,
+      turno: { select: { fechaHora: true } },
+    },
   });
 
   const mesesResumenMap = new Map<string, { bruto: number; neto: number; cantidad: number }>();
@@ -244,7 +249,7 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
     const { start, end } = getClinicMonthBounds(y, m);
     const mesKey = start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
     const monthPagos = pagosAll.filter(p => {
-      const d = new Date(p.createdAt);
+      const d = new Date(p.turno.fechaHora);
       return d >= start && d < end && p.estado === 'APROBADO';
     });
     mesesResumenMap.set(mesKey, {
