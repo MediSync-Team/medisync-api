@@ -2,6 +2,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { describe, expect, it, beforeEach, afterEach, jest } from '@jest/globals';
 import { Prisma } from '@prisma/client';
+import { formatClinicDateTimeEs } from '../utils/clinic-time';
 
 const mockPrisma = {
   turno: {
@@ -159,6 +160,14 @@ describe('POST /pagos/webhook payment approval state guards', () => {
       data: { estado: 'CONFIRMADO' },
     }));
     expect(mockSendNotification).toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalledWith(
+      ['EMAIL', 'WHATSAPP'],
+      expect.objectContaining({
+        message: expect.stringContaining(
+          formatClinicDateTimeEs(new Date('2026-05-18T13:00:00.000Z'))
+        ),
+      })
+    );
   });
 
   it('approves payment for an already CONFIRMADO turno and keeps it confirmed', async () => {

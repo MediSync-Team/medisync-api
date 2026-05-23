@@ -7,6 +7,7 @@ import { sendNotification } from '../utils/notifications';
 import { validateAndApplyCoupon } from '../utils/coupon';
 import { redeemCouponUse } from '../utils/coupon-redemption';
 import { isPayableTurnoState } from '../utils/turno-state';
+import { formatClinicDateTimeEs } from '../utils/clinic-time';
 import { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -396,7 +397,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           await sendNotification(['EMAIL', 'WHATSAPP'], {
             event: 'TURNO_CONFIRMADO',
             title: 'Pago aprobado — Turno confirmado',
-            message: `Tu pago fue aprobado y el turno del ${turno.fechaHora.toLocaleString('es-AR')} quedó confirmado.`,
+            message: `Tu pago fue aprobado y el turno del ${formatClinicDateTimeEs(turno.fechaHora)} quedó confirmado.`,
             userEmail: turno.paciente?.email,
             userPhone: turno.paciente?.telefono,
             meta: {
