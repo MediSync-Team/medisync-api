@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
+import { addMonthsToClinicMonth, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -198,37 +199,40 @@ router.get('/turnos', asyncHandler(async (req, res) => {
 
 // ── Analytics ─────────────────────────────────────────────────────────────
 router.get('/analytics', asyncHandler(async (_req, res) => {
-  const now   = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1); // 12 months back
+  const now = new Date();
+  const clinicNow = getClinicDateTimeParts(now);
+  const startMonth = addMonthsToClinicMonth(clinicNow.year, clinicNow.month, -11);
+  const { start } = getClinicMonthBounds(startMonth.year, startMonth.month);
+  const { end } = getClinicMonthBounds(clinicNow.year, clinicNow.month);
 
   // ── Revenue per month (last 12 months) ───────────────────────────────────
   const pagosAprobados = await prisma.pago.findMany({
-    where: { estado: 'APROBADO', createdAt: { gte: start } },
+    where: { estado: 'APROBADO', createdAt: { gte: start, lt: end } },
     select: { monto: true, createdAt: true },
   });
 
   const revenueByMonth: Record<string, number> = {};
   const turnosByMonth:  Record<string, number> = {};
   for (let i = 11; i >= 0; i--) {
-    const d    = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key  = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const month = addMonthsToClinicMonth(clinicNow.year, clinicNow.month, -i);
+    const key = `${month.year}-${String(month.month).padStart(2, '0')}`;
     revenueByMonth[key] = 0;
     turnosByMonth[key]  = 0;
   }
   for (const p of pagosAprobados) {
-    const d   = new Date(p.createdAt);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const parts = getClinicDateTimeParts(p.createdAt);
+    const key = `${parts.year}-${String(parts.month).padStart(2, '0')}`;
     if (revenueByMonth[key] !== undefined) revenueByMonth[key] += Number(p.monto);
   }
 
   // ── Turnos por mes ────────────────────────────────────────────────────────
   const turnosRecientes = await prisma.turno.findMany({
-    where: { createdAt: { gte: start } },
+    where: { createdAt: { gte: start, lt: end } },
     select: { createdAt: true },
   });
   for (const t of turnosRecientes) {
-    const d   = new Date(t.createdAt);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const parts = getClinicDateTimeParts(t.createdAt);
+    const key = `${parts.year}-${String(parts.month).padStart(2, '0')}`;
     if (turnosByMonth[key] !== undefined) turnosByMonth[key]++;
   }
 
@@ -308,6 +312,8 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
   const revenueTotal    = Object.values(revenueByMonth).reduce((a, b) => a + b, 0);
   const COMISION_RATE   = 0.05;
   const comisionesTotal = revenueTotal * COMISION_RATE;
+  const revenueByMonthSeries = Object.entries(revenueByMonth).map(([month, revenue]) => ({ month, revenue }));
+  const turnosByMonthSeries = Object.entries(turnosByMonth).map(([month, count]) => ({ month, count }));
 
   // ── Tasa de completado ────────────────────────────────────────────────────
   const [totalT, completados, cancelados] = await Promise.all([
@@ -319,8 +325,8 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
   const tasaCancelacion = totalT > 0 ? Math.round((cancelados  / totalT) * 100) : 0;
 
   res.json(success({
-    revenueByMonth,
-    turnosByMonth,
+    revenueByMonth: revenueByMonthSeries,
+    turnosByMonth: turnosByMonthSeries,
     turnosPorEspecialidad,
     topProfesionales,
     revenueTotal,

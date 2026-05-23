@@ -3,7 +3,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findPacienteByUserId, findProfesionalByUserId } from '../utils/auth-helpers';
-import { getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
+import { addMonthsToClinicMonth, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -18,13 +18,6 @@ const CLINICAL_HISTORY_FIELDS = [
 ] as const;
 
 type ClinicalHistoryField = typeof CLINICAL_HISTORY_FIELDS[number];
-
-function addMonthsToClinicMonth(year: number, month: number, offset: number): { year: number; month: number } {
-  const monthIndex = year * 12 + (month - 1) + offset;
-  const shiftedYear = Math.floor(monthIndex / 12);
-  const shiftedMonth = monthIndex - shiftedYear * 12 + 1;
-  return { year: shiftedYear, month: shiftedMonth };
-}
 
 async function assertProfessionalPatientAccess(userId: string, pacienteId: string) {
   const profesional = await findProfesionalByUserId(userId);
