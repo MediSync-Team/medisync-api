@@ -3,6 +3,7 @@ import request from 'supertest';
 import { describe, expect, it, beforeEach, afterEach, jest } from '@jest/globals';
 import { Prisma } from '@prisma/client';
 import { formatClinicDateTimeEs } from '../utils/clinic-time';
+import type { NotificationChannel, NotificationPayload } from '../utils/notifications';
 
 const mockPrisma = {
   turno: {
@@ -27,7 +28,7 @@ jest.mock('../lib/prisma', () => ({
   default: mockPrisma,
 }));
 
-const mockSendNotification = jest.fn(async () => undefined);
+const mockSendNotification = jest.fn(async (_channels: NotificationChannel[], _payload: NotificationPayload) => undefined);
 jest.mock('../utils/notifications', () => ({
   sendNotification: mockSendNotification,
 }));
