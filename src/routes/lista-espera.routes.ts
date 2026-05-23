@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { asyncHandler, AppError, success } from '../utils/response';
 import { findPacienteByUserId } from '../utils/auth-helpers';
+import { getClinicDateOnlyUtc, parseClinicDateString } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -40,11 +41,17 @@ router.post('/suscribirme', authMiddleware('PACIENTE'), asyncHandler(async (req:
     throw new AppError(400, 'VALIDATION_ERROR', 'Modalidad invalida');
   }
 
-  const fechaObjetivo = new Date(String(fecha));
-  if (Number.isNaN(fechaObjetivo.getTime())) {
+  if (typeof fecha !== 'string') {
     throw new AppError(400, 'VALIDATION_ERROR', 'Fecha invalida');
   }
-  fechaObjetivo.setUTCHours(0, 0, 0, 0);
+
+  let fechaObjetivo: Date;
+  try {
+    parseClinicDateString(fecha);
+    fechaObjetivo = getClinicDateOnlyUtc(fecha);
+  } catch {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Fecha invalida');
+  }
 
   const paciente = await findPacienteByUserId(req.user!.userId);
 

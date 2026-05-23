@@ -1,9 +1,17 @@
 import prisma from '../lib/prisma';
 import { sendNotification } from '../utils/notifications';
 import { createNotification } from './notification.service';
-import { CLINIC_TIME_ZONE, getClinicDayBoundsForInstant } from '../utils/clinic-time';
+import { CLINIC_TIME_ZONE, formatClinicDateKey, getClinicDateOnlyUtc } from '../utils/clinic-time';
 
 const NOTIFY_EXPIRY_HOURS = 2;
+
+function waitlistDateForAppointment(fechaHora: Date): Date {
+  return getClinicDateOnlyUtc(formatClinicDateKey(fechaHora));
+}
+
+function dateOnlyKeyFromDbDate(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
 
 export async function resolveWaitlistForBooking(params: {
   profesionalId: string;
@@ -11,7 +19,7 @@ export async function resolveWaitlistForBooking(params: {
   fechaHora: Date;
   modalidad: 'PRESENCIAL' | 'VIRTUAL';
 }) {
-  const { start, end } = getClinicDayBoundsForInstant(params.fechaHora);
+  const fecha = waitlistDateForAppointment(params.fechaHora);
 
   await prisma.listaEspera.updateMany({
     where: {
@@ -19,10 +27,7 @@ export async function resolveWaitlistForBooking(params: {
       pacienteId: params.pacienteId,
       modalidad: params.modalidad,
       estado: { in: ['ACTIVA', 'NOTIFICADA'] },
-      fecha: {
-        gte: start,
-        lt: end,
-      },
+      fecha,
     },
     data: {
       estado: 'RESUELTA',
@@ -32,10 +37,13 @@ export async function resolveWaitlistForBooking(params: {
 
 async function sendWaitlistNotification(params: {
   profesionalId: string;
-  fechaHora: Date;
+  fechaHora?: Date;
+  fechaKey?: string;
   modalidad: 'PRESENCIAL' | 'VIRTUAL';
 }) {
-  const { start, end } = getClinicDayBoundsForInstant(params.fechaHora);
+  const fechaKey = params.fechaKey ?? (params.fechaHora ? formatClinicDateKey(params.fechaHora) : null);
+  if (!fechaKey) return;
+  const fecha = getClinicDateOnlyUtc(fechaKey);
 
   // Use a transaction with a row-level lock to atomically claim one entry,
   // preventing the TOCTOU race condition where two concurrent calls could
@@ -47,7 +55,7 @@ async function sendWaitlistNotification(params: {
         profesionalId: params.profesionalId,
         modalidad: params.modalidad,
         estado: 'ACTIVA',
-        fecha: { gte: start, lt: end },
+        fecha,
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -70,22 +78,24 @@ async function sendWaitlistNotification(params: {
 
   if (!candidato) return;
 
-  const fechaStr = params.fechaHora.toLocaleDateString('es-AR', { timeZone: CLINIC_TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long' });
-  const horaStr  = params.fechaHora.toLocaleTimeString('es-AR', { timeZone: CLINIC_TIME_ZONE, hour: '2-digit', minute: '2-digit' });
+  const displayDate = params.fechaHora ?? fecha;
+  const fechaStr = displayDate.toLocaleDateString('es-AR', { timeZone: CLINIC_TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long' });
+  const horaStr = params.fechaHora?.toLocaleTimeString('es-AR', { timeZone: CLINIC_TIME_ZONE, hour: '2-digit', minute: '2-digit' });
   const profNombre = `Dr/a. ${candidato.profesional.nombre} ${candidato.profesional.apellido}`;
   const profileUrl = `/profesional/${params.profesionalId}`;
+  const fechaHoraTexto = horaStr ? `${fechaStr} a las ${horaStr}` : fechaStr;
 
   await sendNotification(['EMAIL', 'WHATSAPP'], {
     event: 'LISTA_ESPERA_NOTIFICADA',
     title: '¡Se liberó un turno!',
-    message: `Se liberó un turno con ${profNombre} para el ${fechaStr} a las ${horaStr}. Tenés ${NOTIFY_EXPIRY_HOURS} horas para reservarlo desde MediSync.`,
+    message: `Se liberó un turno con ${profNombre} para el ${fechaHoraTexto}. Tenés ${NOTIFY_EXPIRY_HOURS} horas para reservarlo desde MediSync.`,
     userEmail: candidato.paciente.email,
     userPhone: candidato.paciente.telefono,
     meta: {
       profesionalId: params.profesionalId,
       listaEsperaId: candidato.id,
       modalidad: params.modalidad,
-      fechaHora: params.fechaHora.toISOString(),
+      fechaHora: params.fechaHora?.toISOString(),
       profileUrl,
     },
   });
@@ -94,7 +104,7 @@ async function sendWaitlistNotification(params: {
     usuarioId: candidato.paciente.usuarioId,
     tipo: 'LISTA_ESPERA_NOTIFICADA',
     titulo: '¡Se liberó un turno!',
-    cuerpo: `Se liberó un turno con ${profNombre} para el ${fechaStr} a las ${horaStr}. Tenés ${NOTIFY_EXPIRY_HOURS} horas para reservarlo.`,
+    cuerpo: `Se liberó un turno con ${profNombre} para el ${fechaHoraTexto}. Tenés ${NOTIFY_EXPIRY_HOURS} horas para reservarlo.`,
     link: profileUrl,
   });
 }
@@ -144,7 +154,7 @@ export async function expireStaleWaitlistNotifications() {
 
     await sendWaitlistNotification({
       profesionalId: item.profesionalId,
-      fechaHora: item.fecha,
+      fechaKey: dateOnlyKeyFromDbDate(item.fecha),
       modalidad: item.modalidad as 'PRESENCIAL' | 'VIRTUAL',
     });
   }
