@@ -1,5 +1,7 @@
 import {
   clinicDateTimeToUtcDate,
+  formatClinicDateEs,
+  formatClinicTimeEs,
   getClinicDateTimeParts,
   getClinicDayBoundsFromDateString,
 } from '../utils/clinic-time';
@@ -34,5 +36,12 @@ describe('clinic-time utilities', () => {
     expect(parts.dateKey).toBe('2026-05-18');
     expect(parts.timeKey).toBe('23:30');
     expect(parts.weekday).toBe(1);
+  });
+
+  it('formats clinic date and time in Argentina timezone', () => {
+    const lateNightArgentina = new Date('2026-06-01T02:30:00.000Z');
+
+    expect(formatClinicDateEs(lateNightArgentina)).toBe('31/5/2026');
+    expect(formatClinicTimeEs(lateNightArgentina)).toBe('23:30');
   });
 });

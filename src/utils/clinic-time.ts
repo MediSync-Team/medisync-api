@@ -146,6 +146,19 @@ export function formatClinicDateTimeEs(date: Date): string {
   return date.toLocaleString('es-AR', { timeZone: CLINIC_TIME_ZONE });
 }
 
+export function formatClinicDateEs(date: Date): string {
+  return date.toLocaleDateString('es-AR', { timeZone: CLINIC_TIME_ZONE });
+}
+
+export function formatClinicTimeEs(date: Date): string {
+  return date.toLocaleTimeString('es-AR', {
+    timeZone: CLINIC_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+}
+
 export function getClinicMonthBounds(year: number, month: number): { start: Date; end: Date } {
   // month is 1-12
   const start = new Date(Date.UTC(year, month - 1, 1, -CLINIC_UTC_OFFSET_MINUTES / 60, 0, 0, 0));

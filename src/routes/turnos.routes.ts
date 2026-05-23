@@ -22,7 +22,9 @@ import { DEFAULT_APPOINTMENT_DURATION_MIN, findMatchingAvailability, hasAppointm
 import { acquireAppointmentDayLock } from '../utils/appointment-locks';
 import { canTransitionTurnoState } from '../utils/turno-state';
 import {
+  formatClinicDateEs,
   formatClinicDateTimeEs,
+  formatClinicTimeEs,
   getClinicDateOnlyUtc,
   getClinicDateTimeParts,
   getClinicDayBoundsFromDateString,
@@ -1174,7 +1176,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
     `Especialidad: ${turno.profesional.especialidad.nombre}`,
     turno.profesional.matricula ? `Matricula: ${turno.profesional.matricula}` : null,
     `Paciente: ${turno.paciente ? `${turno.paciente.nombre} ${turno.paciente.apellido}` : 'Sin cuenta'}`,
-    `Fecha atencion: ${turno.fechaHora.toLocaleDateString('es-AR')} ${turno.fechaHora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}`,
+    `Fecha atencion: ${formatClinicDateEs(turno.fechaHora)} ${formatClinicTimeEs(turno.fechaHora)}`,
     '',
     `Diagnostico:`,
     receta.diagnostico,
@@ -1189,7 +1191,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
     receta.advertencias ? `Advertencias: ${receta.advertencias}` : null,
     receta.observaciones ? `Observaciones: ${receta.observaciones}` : null,
     '',
-    `Emitida: ${receta.emitidaAt.toLocaleString('es-AR')}`,
+    `Emitida: ${formatClinicDateTimeEs(receta.emitidaAt)}`,
   ].filter(Boolean).join('\n');
 
   // Notificar al paciente que la receta fue emitida
@@ -1206,7 +1208,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
       await sendNotification(pacChannels, {
         event: 'RECETA_EMITIDA',
         title: 'Tu receta fue emitida',
-        message: `${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta/indicaciones de la consulta del ${turno.fechaHora.toLocaleDateString('es-AR')}.`,
+        message: `${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta/indicaciones de la consulta del ${formatClinicDateEs(turno.fechaHora)}.`,
         userEmail: turno.paciente.email,
         userPhone: pacienteCompleto.telefono ?? undefined,
         meta: {
@@ -1220,7 +1222,7 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
         usuarioId: pacienteCompleto.usuarioId,
         tipo: 'RECETA_EMITIDA',
         titulo: 'Receta emitida',
-        cuerpo: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta de la consulta del ${turno.fechaHora.toLocaleDateString('es-AR')}.`,
+        cuerpo: `Dr/a. ${turno.profesional.nombre} ${turno.profesional.apellido} emitió tu receta de la consulta del ${formatClinicDateEs(turno.fechaHora)}.`,
         link: '/dashboard/paciente',
       });
     }

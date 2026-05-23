@@ -45,6 +45,9 @@ const mockPrisma = {
     findUnique: jest.fn() as any,
     delete: jest.fn() as any,
   },
+  recetaIndicacion: {
+    upsert: jest.fn() as any,
+  },
   $transaction: jest.fn() as any,
 };
 
@@ -360,6 +363,7 @@ describe('POST /turnos/reservar', () => {
     mockPrisma.bookingVerification.create.mockReset();
     mockPrisma.bookingVerification.findUnique.mockReset();
     mockPrisma.bookingVerification.delete.mockReset();
+    mockPrisma.recetaIndicacion.upsert.mockReset();
     mockTx.$executeRaw.mockReset();
     mockTx.turno.findMany.mockReset();
     mockTx.turno.create.mockReset();
@@ -1425,6 +1429,74 @@ describe('POST /turnos/reservar', () => {
       expect(mockTx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
         mockTx.turno.findMany.mock.invocationCallOrder[0]
       );
+    });
+  });
+
+  describe('POST /turnos/:id/receta', () => {
+    it('formats prescription share text and patient notification dates in clinic timezone', async () => {
+      const fechaHora = new Date('2026-06-01T02:30:00.000Z');
+      const emitidaAt = new Date('2026-06-01T03:15:00.000Z');
+
+      mockPrisma.turno.findUnique.mockResolvedValue({
+        id: 'turno-receta-1',
+        estado: 'CONFIRMADO',
+        fechaHora,
+        profesional: {
+          usuarioId: profesionalUsuarioId,
+          nombre: 'Franco',
+          apellido: 'Pedretti',
+          matricula: 'MP123',
+          especialidad: { nombre: 'Clinica medica' },
+        },
+        paciente: {
+          nombre: 'Paciente',
+          apellido: 'Prueba',
+          email: 'paciente@test.com',
+        },
+      });
+      mockPrisma.recetaIndicacion.upsert.mockResolvedValue({
+        id: 'receta-1',
+        turnoId: 'turno-receta-1',
+        diagnostico: 'Diagnostico de prueba',
+        planTratamiento: null,
+        medicamentos: null,
+        indicaciones: 'Indicaciones de prueba',
+        estudiosSolicitados: null,
+        proximoControl: null,
+        advertencias: null,
+        observaciones: null,
+        emitidaAt,
+      });
+      mockPrisma.paciente.findFirst.mockResolvedValue({
+        usuarioId: pacienteUsuarioId,
+        notifEmail: true,
+        notifWhatsapp: false,
+        telefono: null,
+      });
+
+      const res = await request(app)
+        .post('/turnos/turno-receta-1/receta')
+        .set('Authorization', `Bearer ${tokenFor('PROFESIONAL')}`)
+        .send({
+          diagnostico: 'Diagnostico de prueba',
+          indicaciones: 'Indicaciones de prueba',
+        })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.shareText).toContain('Fecha atencion: 31/5/2026 23:30');
+      expect(res.body.data.shareText).not.toContain('Fecha atencion: 1/6/2026');
+      expect(res.body.data.shareText).toContain('Emitida: 1/6/2026');
+
+      expect(sendNotification).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
+        message: expect.stringContaining('consulta del 31/5/2026'),
+        meta: expect.objectContaining({
+          fechaHora: fechaHora.toISOString(),
+        }),
+      }));
+      expect(createNotification).toHaveBeenCalledWith(expect.objectContaining({
+        cuerpo: expect.stringContaining('consulta del 31/5/2026'),
+      }));
     });
   });
 });

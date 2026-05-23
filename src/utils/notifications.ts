@@ -1,3 +1,5 @@
+import { CLINIC_TIME_ZONE } from './clinic-time';
+
 export type NotificationChannel = 'EMAIL' | 'WHATSAPP' | 'IN_APP';
 
 export type NotificationEvent =
@@ -152,7 +154,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
   const details: string[] = [];
   if (meta.fechaHora && typeof meta.fechaHora === 'string') {
     const d = new Date(meta.fechaHora);
-    details.push(infoBox('Fecha y hora', d.toLocaleString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })));
+    details.push(infoBox('Fecha y hora', d.toLocaleString('es-AR', { timeZone: CLINIC_TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })));
   }
   if (meta.profesional && typeof meta.profesional === 'string') {
     details.push(infoBox('Profesional', meta.profesional));
@@ -265,7 +267,7 @@ function buildWhatsappText(payload: NotificationPayload): string {
 
   if (meta.fechaHora && typeof meta.fechaHora === 'string') {
     const d = new Date(meta.fechaHora);
-    lines.push('', `📅 *Fecha:* ${d.toLocaleString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}`);
+    lines.push('', `📅 *Fecha:* ${d.toLocaleString('es-AR', { timeZone: CLINIC_TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}`);
   }
   if (meta.profesional && typeof meta.profesional === 'string') {
     lines.push(`👨‍⚕️ *Profesional:* ${meta.profesional}`);
