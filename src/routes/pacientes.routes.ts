@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findPacienteByUserId, findProfesionalByUserId } from '../utils/auth-helpers';
+import { addMonthsToClinicMonth, getClinicDateTimeParts, getClinicMonthBounds } from '../utils/clinic-time';
 
 const router = Router();
 
@@ -297,7 +298,10 @@ router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: Au
   const paciente = await findPacienteByUserId(req.user!.userId);
 
   const ahora = new Date();
-  const hace12Meses = new Date(ahora.getFullYear() - 1, ahora.getMonth(), 1);
+  const clinicNow = getClinicDateTimeParts(ahora);
+  const startMonth = addMonthsToClinicMonth(clinicNow.year, clinicNow.month, -11);
+  const { start: hace12Meses } = getClinicMonthBounds(startMonth.year, startMonth.month);
+  const { end: finMesActual } = getClinicMonthBounds(clinicNow.year, clinicNow.month);
 
   const [turnosPorEstado, turnosConProf, pagos, turnosPorMesRaw] = await Promise.all([
     // Totals by status
@@ -333,7 +337,7 @@ router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: Au
     prisma.turno.findMany({
       where: {
         pacienteId: paciente.id,
-        fechaHora: { gte: hace12Meses },
+        fechaHora: { gte: hace12Meses, lt: finMesActual },
         estado: { notIn: ['CANCELADO'] },
       },
       select: { fechaHora: true, estado: true },
@@ -358,7 +362,8 @@ router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: Au
   // Build monthly series
   const monthlyMap = new Map<string, number>();
   for (const t of turnosPorMesRaw) {
-    const key = `${t.fechaHora.getFullYear()}-${String(t.fechaHora.getMonth() + 1).padStart(2, '0')}`;
+    const parts = getClinicDateTimeParts(t.fechaHora);
+    const key = `${parts.year}-${String(parts.month).padStart(2, '0')}`;
     monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + 1);
   }
   const turnosPorMes = Array.from(monthlyMap.entries())

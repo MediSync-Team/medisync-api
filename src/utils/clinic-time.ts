@@ -135,6 +135,13 @@ export function addDaysToClinicDate(date: string, days: number): string {
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`;
 }
 
+export function addMonthsToClinicMonth(year: number, month: number, offset: number): { year: number; month: number } {
+  const monthIndex = year * 12 + (month - 1) + offset;
+  const shiftedYear = Math.floor(monthIndex / 12);
+  const shiftedMonth = monthIndex - shiftedYear * 12 + 1;
+  return { year: shiftedYear, month: shiftedMonth };
+}
+
 export function formatClinicDateTimeEs(date: Date): string {
   return date.toLocaleString('es-AR', { timeZone: CLINIC_TIME_ZONE });
 }

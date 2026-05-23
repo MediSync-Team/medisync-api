@@ -6,18 +6,24 @@ import { findProfesionalByUserId, findPacienteByUserId } from '../utils/auth-hel
 
 const router = Router();
 
+function getNext24HoursWindow(now = new Date()): { now: Date; end: Date } {
+  return {
+    now,
+    end: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+  };
+}
+
 router.get('/profesional', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
   const profesional = await findProfesionalByUserId(req.user!.userId);
 
-  const now = new Date();
-  const manana = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 23, 59, 59, 999);
+  const { now, end } = getNext24HoursWindow();
 
   const turnosManana = await prisma.turno.findMany({
     where: {
       profesionalId: profesional.id,
       fechaHora: {
         gte: now,
-        lte: manana,
+        lte: end,
       },
       estado: { in: ['RESERVADO', 'CONFIRMADO'] },
     },
@@ -47,15 +53,14 @@ router.get('/profesional', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 router.get('/paciente', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
   const paciente = await findPacienteByUserId(req.user!.userId);
 
-  const now = new Date();
-  const en24hs = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const { now, end } = getNext24HoursWindow();
 
   const turnosProximos = await prisma.turno.findMany({
     where: {
       pacienteId: paciente.id,
       fechaHora: {
         gte: now,
-        lte: en24hs,
+        lte: end,
       },
       estado: { in: ['RESERVADO', 'CONFIRMADO'] },
     },
