@@ -436,6 +436,10 @@ router.post(
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
       }
+      if (err instanceof Prisma.PrismaClientValidationError) {
+        console.error('[turnos] Prisma validation error:', err.message);
+        throw new AppError(400, 'VALIDATION_ERROR', `Error al crear el turno: ${err.message}`);
+      }
       throw err;
     }
 
