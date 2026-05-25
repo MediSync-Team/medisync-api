@@ -1435,7 +1435,7 @@ describe('POST /turnos/reservar', () => {
   describe('POST /turnos/:id/receta', () => {
     it('formats prescription share text and patient notification dates in clinic timezone', async () => {
       const fechaHora = new Date('2026-06-01T02:30:00.000Z');
-      const emitidaAt = new Date('2026-06-01T03:15:00.000Z');
+      const emitidaAt = new Date('2026-06-01T02:30:00.000Z');
 
       mockPrisma.turno.findUnique.mockResolvedValue({
         id: 'turno-receta-1',
@@ -1486,7 +1486,9 @@ describe('POST /turnos/reservar', () => {
       expect(res.status).toBe(201);
       expect(res.body.data.shareText).toContain('Fecha atencion: 31/5/2026 23:30');
       expect(res.body.data.shareText).not.toContain('Fecha atencion: 1/6/2026');
-      expect(res.body.data.shareText).toContain('Emitida: 1/6/2026');
+      expect(res.body.data.shareText).toContain('Emitida: 31/5/2026');
+      expect(res.body.data.shareText).toContain('23:30');
+      expect(res.body.data.shareText).not.toContain('Emitida: 1/6/2026');
 
       expect(sendNotification).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
         message: expect.stringContaining('consulta del 31/5/2026'),
