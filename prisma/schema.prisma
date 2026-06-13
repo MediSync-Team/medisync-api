@@ -509,6 +509,19 @@ model PushSubscription {
   @@map("push_subscription")
 }
 
+model PushDevice {
+  id         String   @id @default(uuid())
+  usuarioId  String   @map("usuario_id")
+  token      String   @unique
+  platform   String
+  deviceId   String?  @map("device_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([usuarioId])
+  @@map("push_device")
+}
+
 model ChatMensaje {
   id           String    @id @default(uuid())
   turnoId      String    @map("turno_id")

@@ -10,6 +10,7 @@ import { notifyWaitlistForReleasedSlot, resolveWaitlistForBooking } from '../ser
 import { analyzePreconsulta } from '../services/preconsulta.service';
 import { createNotification } from '../services/notification.service';
 import { issueVideoTicket } from '../services/video-room.service';
+import { getIceServers } from '../services/turn.service';
 import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
 import {
   syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
@@ -1254,7 +1255,8 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
   }
 
   const ticket = issueVideoTicket(turno.id, req.user!.userId);
-  res.json(success({ ticket, roomId: turno.id }));
+  const iceServers = await getIceServers();
+  res.json(success({ ticket, roomId: turno.id, iceServers }));
 }));
 
 router.get('/:id/auditoria-cancelacion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {

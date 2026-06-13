@@ -286,6 +286,39 @@ router.post('/push/subscribe', authMiddleware(), asyncHandler(async (req: AuthRe
   res.json(success({ subscribed: true, id: sub.id }));
 }));
 
+// ── POST /api/notifications/push/devices ────────────────────────────────────
+// Saves an Expo push token for the authenticated user.
+router.post('/push/devices', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { token, platform, deviceId } = req.body as { token: string; platform: string; deviceId?: string };
+
+  if (!token || !platform) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'token y platform son requeridos');
+  }
+
+  const device = await prisma.pushDevice.upsert({
+    where: { token },
+    create: { usuarioId: userId, token, platform, deviceId },
+    update: { usuarioId: userId, platform, deviceId },
+  });
+
+  res.json(success({ registered: true, id: device.id }));
+}));
+
+// ── DELETE /api/notifications/push/devices ──────────────────────────────────
+// Removes an Expo push token for the authenticated user.
+router.delete('/push/devices', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const { token } = req.body as { token: string };
+
+  if (!token) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'token es requerido');
+  }
+
+  await prisma.pushDevice.deleteMany({ where: { token, usuarioId: userId } });
+  res.json(success({ unregistered: true }));
+}));
+
 // ── DELETE /api/notifications/push/subscribe ─────────────────────────────────
 // Removes a PushSubscription by endpoint.
 router.delete('/push/subscribe', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {

@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { sendWebPush } from './web-push.service';
+import { sendExpoPushToUser } from './expo-push.service';
 
 // ── SSE connection registry ──────────────────────────────────────────────────
 // Maps userId → array of open SSE Response objects (a user can have multiple tabs)
@@ -65,6 +66,7 @@ const PUSH_PREF_MAP: Record<string, 'pushTurno' | 'pushCancelacion' | 'pushRecor
   RECORDATORIO_2H:    'pushRecordatorio',
   RECETA_EMITIDA:     'pushReceta',
   CHAT_MENSAJE:       'pushChat',
+  VIDEOLLAMADA_LISTA: 'pushTurno',
 };
 
 export async function createNotification(input: CreateNotificationInput) {
@@ -112,6 +114,15 @@ export async function createNotification(input: CreateNotificationInput) {
       tag:   input.tipo,
       url:   input.link ?? '/',
     }).catch((err) => console.error('[web-push] fire-and-forget error:', err));
+
+    sendExpoPushToUser(input.usuarioId, {
+      title: input.titulo,
+      body: input.cuerpo,
+      data: {
+        tipo: input.tipo,
+        link: input.link ?? '/',
+      },
+    }).catch((err) => console.error('[expo-push] fire-and-forget error:', err));
   }
 
   return notif;
