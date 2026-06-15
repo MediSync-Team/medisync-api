@@ -12,7 +12,11 @@
     "lint": "eslint src --ext .ts",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:bdd": "cucumber-js --require-module ts-node/register --require \"features/**/*.ts\""
+    "test:bdd": "cucumber-js --require-module ts-node/register --require \"features/**/*.ts\"",
+    "db:local:onboard": "node scripts/db-local-onboarding.js",
+    "db:push:dev": "node scripts/prisma-with-env.js .env.development db push",
+    "db:push:prod": "node scripts/db-push-prod.js",
+    "db:migrate:deploy": "node scripts/prisma-with-env.js .env.production migrate deploy"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

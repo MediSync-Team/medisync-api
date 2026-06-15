@@ -60,3 +60,13 @@ Node.js + Express + TypeScript, Prisma ORM, PostgreSQL, JWT + bcrypt. Jest + Sup
 ## Production notifications
 - See `PRODUCTION_NOTIFICATIONS.md` for Resend + Twilio WhatsApp flows.
 - Smoke test: `npm run smoke:sprint1` (needs patient credentials in env).
+
+
+## DB Safety
+
+- Never run Prisma commands against production unless the user explicitly asks for production.
+- Local development must use `.env.development`.
+- Production must use `.env.production`, which is never committed.
+- Do not run `prisma db push` against Neon without the guarded `npm run db:push:prod` script.
+- Prefer `prisma migrate deploy` for production once migrations exist.
+- Never use `--force-reset`, `--accept-data-loss`, or destructive migration commands on production.
