@@ -34,6 +34,23 @@ interface CloudflareTurnResponse {
   };
 }
 
+export function summarizeIceServers(servers: IceServer[]): string {
+  const counts = { stun: 0, turn: 0, turns: 0, other: 0 };
+  for (const server of servers) {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    for (const url of urls) {
+      const scheme = String(url).split(':')[0] as keyof typeof counts;
+      if (scheme in counts) counts[scheme] += 1;
+      else counts.other += 1;
+    }
+  }
+  return `servers=${servers.length} stun=${counts.stun} turn=${counts.turn} turns=${counts.turns} other=${counts.other}`;
+}
+
+function logIceServers(kind: 'stun-only' | 'stun-turn', servers: IceServer[]) {
+  console.info(`[turn] ICE servers resolved (${kind}): ${summarizeIceServers(servers)}`);
+}
+
 /**
  * Resolve the ICE servers to hand to a client for a call.
  * Returns STUN + a Cloudflare TURN entry with ephemeral credentials when
@@ -44,6 +61,7 @@ export async function getIceServers(): Promise<IceServer[]> {
   const apiToken = process.env.CLOUDFLARE_TURN_API_TOKEN;
 
   if (!tokenId || !apiToken) {
+    logIceServers('stun-only', STUN_SERVERS);
     return STUN_SERVERS;
   }
 
@@ -66,18 +84,23 @@ export async function getIceServers(): Promise<IceServer[]> {
       console.warn(
         `[turn] Cloudflare TURN credential request failed (${res.status}); falling back to STUN-only`,
       );
+      logIceServers('stun-only', STUN_SERVERS);
       return STUN_SERVERS;
     }
 
     const data = (await res.json()) as CloudflareTurnResponse;
     if (!data?.iceServers?.urls?.length) {
       console.warn('[turn] Cloudflare TURN response missing iceServers; falling back to STUN-only');
+      logIceServers('stun-only', STUN_SERVERS);
       return STUN_SERVERS;
     }
 
-    return [...STUN_SERVERS, data.iceServers];
+    const servers = [...STUN_SERVERS, data.iceServers];
+    logIceServers('stun-turn', servers);
+    return servers;
   } catch (err) {
     console.warn('[turn] Error fetching Cloudflare TURN credentials; falling back to STUN-only', err);
+    logIceServers('stun-only', STUN_SERVERS);
     return STUN_SERVERS;
   }
 }
