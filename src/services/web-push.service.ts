@@ -73,11 +73,4 @@ export async function sendWebPush(usuarioId: string, payload: PushPayload): Prom
   }
 }
 
-/**
- * Send push to multiple users at once.
- */
-export async function sendWebPushToMany(usuarioIds: string[], payload: PushPayload): Promise<void> {
-  await Promise.allSettled(usuarioIds.map((id) => sendWebPush(id, payload)));
-}
-
 export { vapidPublicKey };

@@ -109,11 +109,6 @@ export function clinicDateTimeToUtcDate(date: string, time: string): Date {
   return new Date(Date.UTC(year, month - 1, day, hour - CLINIC_UTC_OFFSET_MINUTES / 60, minute, 0, 0));
 }
 
-export function clinicDatePartsToUtcDate(parts: ClinicDateParts, time: string): Date {
-  const date = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
-  return clinicDateTimeToUtcDate(date, time);
-}
-
 export function getClinicDayBoundsFromDateString(date: string): { start: Date; end: Date } {
   const { year, month, day } = parseClinicDateString(date);
   const start = new Date(Date.UTC(year, month - 1, day, -CLINIC_UTC_OFFSET_MINUTES / 60, 0, 0, 0));
@@ -167,4 +162,19 @@ export function getClinicMonthBounds(year: number, month: number): { start: Date
   const nextYear = month === 12 ? year + 1 : year;
   const end = new Date(Date.UTC(nextYear, nextMonth - 1, 1, -CLINIC_UTC_OFFSET_MINUTES / 60, 0, 0, 0));
   return { start, end };
+}
+
+/**
+ * Shift a clinic `year`/`month` (month is 1-12) back by `monthsBack` calendar
+ * months, handling year rollover. Centralizes the arithmetic that the
+ * dashboard aggregations repeat when building N-month windows.
+ */
+export function shiftClinicMonth(year: number, month: number, monthsBack: number): { year: number; month: number } {
+  let m = month - monthsBack;
+  let y = year;
+  if (m <= 0) {
+    y -= Math.ceil(Math.abs(m) / 12) || 1;
+    m = 12 + (m % 12);
+  }
+  return { year: y, month: m };
 }

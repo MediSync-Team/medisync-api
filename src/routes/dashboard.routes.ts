@@ -8,6 +8,7 @@ import {
   getClinicDayBoundsForInstant,
   getClinicDateTimeParts,
   getClinicMonthBounds,
+  shiftClinicMonth,
   CLINIC_TIME_ZONE
 } from '../utils/clinic-time';
 
@@ -74,12 +75,7 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   const parts = getClinicDateTimeParts(now);
 
   // Single aggregation query instead of N+1 findMany per month
-  let targetMonth = parts.month - mesesAtras + 1;
-  let targetYear = parts.year;
-  if (targetMonth <= 0) {
-    targetYear -= Math.ceil(Math.abs(targetMonth) / 12) || 1;
-    targetMonth = 12 + (targetMonth % 12);
-  }
+  const { year: targetYear, month: targetMonth } = shiftClinicMonth(parts.year, parts.month, mesesAtras - 1);
   const { start: sixMonthsAgo } = getClinicMonthBounds(targetYear, targetMonth);
 
   const [turnosPorEstado, pagosPorMes, totalTurnos, pacientesUnicos] = await Promise.all([
@@ -134,12 +130,7 @@ router.get('/stats', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   const ingresosPorMes: { mes: string; bruto: number; neto: number }[] = [];
 
   for (let i = mesesAtras - 1; i >= 0; i--) {
-    let m = parts.month - i;
-    let y = parts.year;
-    if (m <= 0) {
-      y -= Math.ceil(Math.abs(m) / 12) || 1;
-      m = 12 + (m % 12);
-    }
+    const { year: y, month: m } = shiftClinicMonth(parts.year, parts.month, i);
     const { start: startOfMonth, end: endOfMonth } = getClinicMonthBounds(y, m);
     const mesNombre = startOfMonth.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
 
@@ -184,12 +175,7 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
   const now = new Date();
   const parts = getClinicDateTimeParts(now);
 
-  let defaultDesdeMonth = parts.month - 11;
-  let defaultDesdeYear = parts.year;
-  if (defaultDesdeMonth <= 0) {
-    defaultDesdeYear -= Math.ceil(Math.abs(defaultDesdeMonth) / 12) || 1;
-    defaultDesdeMonth = 12 + (defaultDesdeMonth % 12);
-  }
+  const { year: defaultDesdeYear, month: defaultDesdeMonth } = shiftClinicMonth(parts.year, parts.month, 11);
   const { start: defaultDesde } = getClinicMonthBounds(defaultDesdeYear, defaultDesdeMonth);
   const { end: defaultHasta } = getClinicMonthBounds(parts.year, parts.month);
 
@@ -240,12 +226,7 @@ router.get('/pagos', authMiddleware('PROFESIONAL'), asyncHandler(async (req: Aut
 
   const mesesResumenMap = new Map<string, { bruto: number; neto: number; cantidad: number }>();
   for (let i = 11; i >= 0; i--) {
-    let m = parts.month - i;
-    let y = parts.year;
-    if (m <= 0) {
-      y -= Math.ceil(Math.abs(m) / 12) || 1;
-      m = 12 + (m % 12);
-    }
+    const { year: y, month: m } = shiftClinicMonth(parts.year, parts.month, i);
     const { start, end } = getClinicMonthBounds(y, m);
     const mesKey = start.toLocaleDateString('es-AR', { month: 'short', year: '2-digit', timeZone: CLINIC_TIME_ZONE });
     const monthPagos = pagosAll.filter(p => {

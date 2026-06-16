@@ -419,7 +419,7 @@ import { getGoogleAuthUrl, exchangeGoogleCode } from '../services/sso.service';
 router.get('/google', (req, res) => {
   const rol = String(req.query.rol || 'PACIENTE');
   if (!['PACIENTE', 'PROFESIONAL', 'CLINICA'].includes(rol)) {
-    return res.status(400).json({ success: false, error: { code: 'INVALID_ROL', message: 'Rol inválido' } });
+    throw new AppError(400, 'INVALID_ROL', 'Rol inválido');
   }
 
   const nonce = crypto.randomUUID();
