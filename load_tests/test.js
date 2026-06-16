@@ -1,6 +1,10 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+// BASE_URL configurable por entorno:
+//   BASE_URL=https://staging.medisync.ar k6 run load_tests/test.js
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000';
+
 // 1. CONFIGURACIÓN: 50 usuarios virtuales atacando durante 30 segundos
 export const options = {
   vus: 50,
@@ -9,7 +13,7 @@ export const options = {
 
 export default function () {
   // Usamos el endpoint de analíticas que es el que más estresa a Prisma y PostgreSQL
-  const url = 'http://localhost:4000/api/admin/analytics'; 
+  const url = `${BASE_URL}/api/admin/analytics`;
   
   const respuesta = http.get(url);
 
