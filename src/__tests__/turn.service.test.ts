@@ -28,19 +28,19 @@ describe('getIceServers', () => {
     process.env.CLOUDFLARE_TURN_API_TOKEN = 'api-token';
 
     const turnEntry = {
-      urls: ['turn:turn.cloudflare.com:3478', 'turns:turn.cloudflare.com:5349?transport=tcp'],
+      urls: ['stun:stun.cloudflare.com:3478', 'turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:3478?transport=tcp', 'turns:turn.cloudflare.com:5349?transport=tcp'],
       username: 'ephemeral-user',
       credential: 'ephemeral-secret',
     };
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ iceServers: turnEntry }),
+      json: async () => ({ iceServers: [turnEntry] }),
     }) as unknown as typeof fetch;
 
     const servers = await getIceServers();
     expect(servers).toHaveLength(STUN_SERVERS.length + 1);
     expect(servers[servers.length - 1]).toEqual(turnEntry);
-    expect(console.info).toHaveBeenCalledWith('[turn] ICE servers resolved (stun-turn): servers=4 stun=3 turn=1 turns=1 other=0');
+    expect(console.info).toHaveBeenCalledWith('[turn] ICE servers resolved (stun-turn): servers=4 stun=4 turn=2 turns=1 other=0');
     const last = servers[servers.length - 1].urls;
     const urls = Array.isArray(last) ? last : [last];
     expect(urls.some((u) => u.startsWith('turn'))).toBe(true);

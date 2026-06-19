@@ -31,7 +31,7 @@ interface CloudflareTurnResponse {
     urls: string[];
     username?: string;
     credential?: string;
-  };
+  }[];
 }
 
 export function summarizeIceServers(servers: IceServer[]): string {
@@ -69,7 +69,7 @@ export async function getIceServers(): Promise<IceServer[]> {
 
   try {
     const res = await fetch(
-      `${CLOUDFLARE_TURN_API}/${tokenId}/credentials/generate`,
+      `${CLOUDFLARE_TURN_API}/${tokenId}/credentials/generate-ice-servers`,
       {
         method: 'POST',
         headers: {
@@ -89,13 +89,13 @@ export async function getIceServers(): Promise<IceServer[]> {
     }
 
     const data = (await res.json()) as CloudflareTurnResponse;
-    if (!data?.iceServers?.urls?.length) {
+    if (!data?.iceServers?.length) {
       console.warn('[turn] Cloudflare TURN response missing iceServers; falling back to STUN-only');
       logIceServers('stun-only', STUN_SERVERS);
       return STUN_SERVERS;
     }
 
-    const servers = [...STUN_SERVERS, data.iceServers];
+    const servers = [...STUN_SERVERS, ...data.iceServers];
     logIceServers('stun-turn', servers);
     return servers;
   } catch (err) {
