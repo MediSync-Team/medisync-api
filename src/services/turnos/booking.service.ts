@@ -18,7 +18,7 @@ import {
   getClinicDayBoundsForInstant,
   getClinicMonthBounds,
 } from '../../utils/clinic-time';
-import { createVideoCallLink, notifyTurnoUser } from './turno-helpers';
+import { notifyTurnoUser } from './turno-helpers';
 
 const FREE_PLAN_MONTHLY_TURNO_LIMIT = 20;
 
@@ -128,7 +128,9 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
     return reservarGuest(input, fechaHoraDate, profesionalId);
   }
 
-  const linkVideollamada = modalidad === 'VIRTUAL' ? createVideoCallLink() : null;
+  // Native WebRTC migration: no external (Jitsi) link is persisted. Virtual turnos
+  // are joined from inside the app via the auth-gated /turnos/:id/video-token flow.
+  const linkVideollamada = null;
   const lugarAtencionTurno = matchingDisp?.lugarAtencion ?? profesional.lugarAtencion ?? null;
 
   let result;
@@ -365,9 +367,8 @@ export async function confirmarReservaGuest(token: string) {
     });
   }
 
-  const linkVideollamada = verification.modalidad === 'VIRTUAL'
-    ? `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`
-    : null;
+  // Native WebRTC migration: no external (Jitsi) link is persisted for guests either.
+  const linkVideollamada = null;
 
   const turno = await prisma.$transaction(async (tx) => {
     const verificationClinicParts = getClinicDateTimeParts(verification.fechaHora);

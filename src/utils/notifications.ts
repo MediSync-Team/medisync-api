@@ -171,8 +171,9 @@ function buildEmailHtml(payload: NotificationPayload): string {
   if (meta.lugarAtencion && typeof meta.lugarAtencion === 'string') {
     details.push(infoBox('Lugar', `📍 ${meta.lugarAtencion}`));
   }
-  if (meta.linkVideollamada && typeof meta.linkVideollamada === 'string') {
-    details.push(infoBox('Videollamada', `<a href="${meta.linkVideollamada}" style="color:${EMAIL_BRAND_COLOR};">Unirse a la consulta</a>`));
+  if (meta.modalidad === 'VIRTUAL') {
+    const dashboardUrl = `${process.env.FRONTEND_URL ?? ''}/dashboard`;
+    details.push(infoBox('Videoconsulta', `<a href="${dashboardUrl}" style="color:${EMAIL_BRAND_COLOR};">Ingresá a MediSync para unirte</a>`));
   }
 
   const detailsHtml = details.length
@@ -182,8 +183,8 @@ function buildEmailHtml(payload: NotificationPayload): string {
     : '';
 
   let ctaHtml = '';
-  if (meta.linkVideollamada && typeof meta.linkVideollamada === 'string') {
-    ctaHtml = primaryButton('Unirse a la consulta', meta.linkVideollamada);
+  if (meta.modalidad === 'VIRTUAL') {
+    ctaHtml = primaryButton('Ingresar a la videoconsulta', `${process.env.FRONTEND_URL ?? ''}/dashboard`);
   } else if (event === 'RECUPERAR_CONTRASENA' && meta.resetUrl && typeof meta.resetUrl === 'string') {
     ctaHtml = primaryButton('Restablecer contraseña', meta.resetUrl);
   } else if (event === 'BOOKING_CONFIRMATION' && meta.confirmUrl && typeof meta.confirmUrl === 'string') {
@@ -278,8 +279,8 @@ function buildWhatsappText(payload: NotificationPayload): string {
   if (meta.lugarAtencion && typeof meta.lugarAtencion === 'string') {
     lines.push(`📍 *Lugar:* ${meta.lugarAtencion}`);
   }
-  if (meta.linkVideollamada && typeof meta.linkVideollamada === 'string') {
-    lines.push(`🖥️ *Videollamada:* ${meta.linkVideollamada}`);
+  if (meta.modalidad === 'VIRTUAL') {
+    lines.push(`🖥️ *Videoconsulta:* Ingresá a MediSync para unirte → ${process.env.FRONTEND_URL ?? ''}/dashboard`);
   }
   lines.push('', '_MediSync — Tu plataforma médica_');
   return lines.join('\n');

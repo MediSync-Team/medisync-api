@@ -1243,7 +1243,7 @@ describe('POST /turnos/reservar', () => {
       );
     });
 
-    it('creates a video link and clears location when changing from in-person to virtual', async () => {
+    it('persists no external video link and clears location when changing from in-person to virtual', async () => {
       const { newDate } = setReprogramHappyPathMocks({
         currentModalidad: 'PRESENCIAL',
       });
@@ -1258,7 +1258,7 @@ describe('POST /turnos/reservar', () => {
       expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           modalidad: 'VIRTUAL',
-          linkVideollamada: expect.stringMatching(/^https:\/\/meet\.jit\.si\/MediSync-/),
+          linkVideollamada: null,
           lugarAtencion: null,
         }),
       }));
@@ -1286,11 +1286,10 @@ describe('POST /turnos/reservar', () => {
       }));
     });
 
-    it('reuses the existing video link when staying virtual', async () => {
-      const existingLink = 'https://meet.jit.si/MediSync-existing';
+    it('clears any legacy video link when staying virtual (native WebRTC)', async () => {
       const { newDate } = setReprogramHappyPathMocks({
         currentModalidad: 'VIRTUAL',
-        currentLinkVideollamada: existingLink,
+        currentLinkVideollamada: 'https://meet.jit.si/MediSync-existing',
       });
 
       const res = await request(app)
@@ -1303,7 +1302,7 @@ describe('POST /turnos/reservar', () => {
       expect(mockTx.turno.update).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           modalidad: 'VIRTUAL',
-          linkVideollamada: existingLink,
+          linkVideollamada: null,
           lugarAtencion: null,
         }),
       }));

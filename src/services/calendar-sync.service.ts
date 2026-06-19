@@ -31,8 +31,8 @@ function buildDescription(
   lugarAtencion: string | null,
 ): string {
   const lines = [`Paciente: ${pacienteNombre}`];
-  if (modalidad === 'VIRTUAL' && linkVideollamada) {
-    lines.push(`Videollamada: ${linkVideollamada}`);
+  if (modalidad === 'VIRTUAL') {
+    lines.push('Videoconsulta: ingresá a MediSync para unirte');
   } else if (lugarAtencion) {
     lines.push(`Lugar: ${lugarAtencion}`);
   }
@@ -155,8 +155,8 @@ function buildPacienteDescription(
   lugarAtencion: string | null,
 ): string {
   const lines = [`Especialidad: ${especialidad}`, `Profesional: Dr/a. ${profNombre}`];
-  if (modalidad === 'VIRTUAL' && linkVideollamada) {
-    lines.push(`Videollamada: ${linkVideollamada}`);
+  if (modalidad === 'VIRTUAL') {
+    lines.push('Videoconsulta: ingresá a MediSync para unirte');
   } else if (lugarAtencion) {
     lines.push(`Lugar: ${lugarAtencion}`);
   }

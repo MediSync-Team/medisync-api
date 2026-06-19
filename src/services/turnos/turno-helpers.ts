@@ -86,10 +86,6 @@ export function canCancelTurno(turnoFechaHora: Date): boolean {
   return diffMs >= cancellationWindowHours * 60 * 60 * 1000;
 }
 
-export function createVideoCallLink(): string {
-  return `https://meet.jit.si/MediSync-${Math.random().toString(36).substring(2, 10)}`;
-}
-
 export function assertPreconsultaEditable(turno: { fechaHora: Date; estado: string }) {
   if (!['RESERVADO', 'CONFIRMADO'].includes(turno.estado)) {
     throw new AppError(400, 'INVALID_STATE', 'Solo se puede completar preconsulta en turnos reservados o confirmados');

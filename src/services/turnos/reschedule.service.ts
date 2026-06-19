@@ -17,7 +17,6 @@ import {
 import {
   assertTurnoAccess,
   canCancelTurno,
-  createVideoCallLink,
   notifyTurnoUser,
 } from './turno-helpers';
 
@@ -94,9 +93,8 @@ export async function reprogramarTurno(input: ReprogramarTurnoInput) {
   }
 
   const profReprog = await prisma.profesional.findUnique({ where: { id: turno.profesionalId }, select: { lugarAtencion: true } });
-  const nuevaLinkVideollamada = modalidadFinal === 'VIRTUAL'
-    ? turno.linkVideollamada ?? createVideoCallLink()
-    : null;
+  // Native WebRTC migration: virtual turnos no longer carry an external (Jitsi) link.
+  const nuevaLinkVideollamada = null;
   const nuevaLugarAtencion = modalidadFinal === 'PRESENCIAL'
     ? matchingDispRep?.lugarAtencion ?? profReprog?.lugarAtencion ?? null
     : null;

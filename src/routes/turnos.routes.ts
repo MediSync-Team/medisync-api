@@ -320,6 +320,15 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
     throw new AppError(400, 'INVALID_STATE', 'Solo se puede unir a turnos reservados o confirmados');
   }
 
+  // Join window: from 15 minutes before the appointment until it ends (start + duración).
+  const startMs = turno.fechaHora.getTime();
+  const endMs = startMs + turno.duracionMin * 60_000;
+  const now = Date.now();
+  const JOIN_OPENS_BEFORE_MS = 15 * 60_000;
+  if (now < startMs - JOIN_OPENS_BEFORE_MS || now > endMs) {
+    throw new AppError(403, 'OUTSIDE_JOIN_WINDOW', 'La videollamada está disponible desde 15 minutos antes del turno y hasta que finaliza');
+  }
+
   const ticket = issueVideoTicket(turno.id, req.user!.userId);
   const iceServers = await getIceServers();
   res.json(success({ ticket, roomId: turno.id, iceServers }));
