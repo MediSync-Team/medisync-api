@@ -217,7 +217,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
-  const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl, obrasSociales } = req.body;
+  const { nombre, apellido, bio, telefono, genero, lugarAtencion, precioConsulta, fotoUrl, obrasSociales, matricula, especialidadId } = req.body;
 
   const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
   if (profesionalOwner.id !== req.params.id) {
@@ -232,6 +232,13 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
     throw new AppError(400, 'VALIDATION_ERROR', 'El género debe ser MASCULINO, FEMENINO, OTRO o NO_ESPECIFICADO');
   }
 
+  if (especialidadId !== undefined) {
+    const especialidad = await prisma.especialidad.findUnique({ where: { id: especialidadId } });
+    if (!especialidad) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La especialidad seleccionada no existe');
+    }
+  }
+
   const profesional = await prisma.profesional.update({
     where: { id: req.params.id },
     data: {
@@ -243,6 +250,8 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
       lugarAtencion,
       precioConsulta,
       fotoUrl,
+      matricula,
+      ...(especialidadId !== undefined && { especialidadId }),
       // Normalize to uppercase for consistent filtering
       ...(Array.isArray(obrasSociales) && {
         obrasSociales: obrasSociales.map((o: string) => o.trim().toUpperCase()).filter(Boolean),
