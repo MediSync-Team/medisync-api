@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { decryptSecret } from '../utils/crypto';
 
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID!;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
@@ -27,10 +28,14 @@ export async function exchangeCode(code: string) {
   return tokens;
 }
 
-/** Build an authenticated OAuth2 client from a stored token JSON string. */
-export function buildAuthClient(tokenJson: string) {
+/**
+ * Build an authenticated OAuth2 client from a stored token. The stored value is
+ * encrypted at rest (see utils/crypto); `decryptSecret` transparently handles
+ * legacy plaintext rows.
+ */
+export function buildAuthClient(storedToken: string) {
   const client = createOAuthClient();
-  client.setCredentials(JSON.parse(tokenJson));
+  client.setCredentials(JSON.parse(decryptSecret(storedToken)));
   return client;
 }
 

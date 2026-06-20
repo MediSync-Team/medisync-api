@@ -49,6 +49,12 @@ const corsRules = createCorsOriginRules({
   isProduction,
 });
 
+// In production the MercadoPago webhook URL must come from a trusted BACKEND_URL,
+// never from the request Host header (SSRF). Warn loudly if it is missing.
+if (isProduction && !process.env.BACKEND_URL) {
+  console.warn('[config] BACKEND_URL no está configurado — los pagos no podrán generar la URL del webhook de MercadoPago.');
+}
+
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
 }

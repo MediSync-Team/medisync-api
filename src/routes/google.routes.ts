@@ -6,14 +6,43 @@
  * GET  /api/google/status     → is the user connected?
  */
 import { Router } from 'express';
+import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { getAuthUrl, exchangeCode, createOAuthClient } from '../services/google-calendar.service';
+import { encryptSecret, decryptSecret } from '../utils/crypto';
 
 const router = Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+type OAuthStatePayload = { userId: string; rol: 'PROFESIONAL' | 'PACIENTE' };
+
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET no configurado');
+  return secret;
+}
+
+// The OAuth `state` is a short-lived JWT signed with JWT_SECRET. Because /auth-url
+// is authenticated, the state can only ever carry the caller's own userId — an
+// attacker cannot forge a state binding their Google code to a victim's account.
+function signOAuthState(payload: OAuthStatePayload): string {
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '10m' });
+}
+
+function verifyOAuthState(state: string): OAuthStatePayload | null {
+  try {
+    const decoded = jwt.verify(state, getJwtSecret()) as Partial<OAuthStatePayload>;
+    if (!decoded.userId || (decoded.rol !== 'PROFESIONAL' && decoded.rol !== 'PACIENTE')) {
+      return null;
+    }
+    return { userId: decoded.userId, rol: decoded.rol };
+  } catch {
+    return null;
+  }
+}
 
 // ── GET /api/google/auth-url ─────────────────────────────────────────────────
 // State encodes userId|rol so the callback can redirect to the correct dashboard.
@@ -23,7 +52,7 @@ router.get('/auth-url', authMiddleware(), asyncHandler(async (req: AuthRequest, 
     throw new AppError(403, 'FORBIDDEN', 'Solo profesionales y pacientes pueden conectar Google Calendar');
   }
 
-  const state = `${userId}|${rol}`;
+  const state = signOAuthState({ userId, rol });
   const url = getAuthUrl(state);
   res.json(success({ url }));
 }));
@@ -37,8 +66,12 @@ router.get('/callback', asyncHandler(async (req, res) => {
     return res.redirect(`${FRONTEND_URL}/dashboard?google=error`);
   }
 
-  // Support legacy state (just userId) and new state (userId|rol)
-  const [userId, rol = 'PROFESIONAL'] = state.split('|');
+  // State must be a valid, unexpired, server-signed token. Reject forged states.
+  const verifiedState = verifyOAuthState(state);
+  if (!verifiedState) {
+    return res.redirect(`${FRONTEND_URL}/dashboard?google=error`);
+  }
+  const { userId, rol } = verifiedState;
   const basePath = rol === 'PACIENTE' ? '/dashboard/paciente' : '/dashboard';
 
   try {
@@ -46,7 +79,7 @@ router.get('/callback', asyncHandler(async (req, res) => {
 
     await prisma.usuario.update({
       where: { id: userId },
-      data: { googleToken: JSON.stringify(tokens) },
+      data: { googleToken: encryptSecret(JSON.stringify(tokens)) },
     });
 
     return res.redirect(`${FRONTEND_URL}${basePath}?google=connected`);
@@ -64,7 +97,7 @@ router.delete('/disconnect', authMiddleware(), asyncHandler(async (req: AuthRequ
   if (usuario.googleToken) {
     try {
       const client = createOAuthClient();
-      const tokens = JSON.parse(usuario.googleToken);
+      const tokens = JSON.parse(decryptSecret(usuario.googleToken));
       client.setCredentials(tokens);
       await client.revokeCredentials();
     } catch {

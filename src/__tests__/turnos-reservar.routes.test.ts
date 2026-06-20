@@ -10,6 +10,9 @@ const mockTx = {
     create: jest.fn() as any,
     update: jest.fn() as any,
   },
+  usuario: {
+    create: jest.fn() as any,
+  },
 };
 
 const mockPrisma = {
@@ -44,6 +47,9 @@ const mockPrisma = {
     create: jest.fn() as any,
     findUnique: jest.fn() as any,
     delete: jest.fn() as any,
+  },
+  passwordResetToken: {
+    create: jest.fn() as any,
   },
   recetaIndicacion: {
     upsert: jest.fn() as any,
@@ -749,7 +755,7 @@ describe('POST /turnos/reservar', () => {
       where: {
         profesionalId,
         fechaHora: { gte: start, lt: end },
-        estado: { notIn: ['CANCELADO'] },
+        estado: { in: ['RESERVADO', 'CONFIRMADO', 'COMPLETADO'] },
       },
     });
     expect(mockTx.turno.create).toHaveBeenCalled();
@@ -799,7 +805,7 @@ describe('POST /turnos/reservar', () => {
       where: {
         profesionalId,
         fechaHora: { gte: start, lt: end },
-        estado: { notIn: ['CANCELADO'] },
+        estado: { in: ['RESERVADO', 'CONFIRMADO', 'COMPLETADO'] },
       },
     });
   });
@@ -1388,7 +1394,7 @@ describe('POST /turnos/reservar', () => {
       }));
     });
 
-    it('acquires the professional-day advisory lock before legacy guest confirmation conflict reads', async () => {
+    it('acquires the professional-day advisory lock before guest confirmation conflict reads', async () => {
       process.env.ENABLE_GUEST_BOOKING = 'true';
 
       const date = futureSlot();
@@ -1404,8 +1410,10 @@ describe('POST /turnos/reservar', () => {
         modalidad: 'PRESENCIAL',
         expiresAt: new Date(Date.now() + 60_000),
       });
-      mockPrisma.paciente.findFirst.mockResolvedValue({ id: pacienteId });
+      // New-email guest: no existing Usuario → a real account is created.
+      mockPrisma.usuario.findUnique.mockResolvedValue(null);
       mockTx.turno.findMany.mockResolvedValue([]);
+      mockTx.usuario.create.mockResolvedValue({ id: 'user-guest-1', paciente: { id: pacienteId } });
       mockTx.turno.create.mockResolvedValue({
         id: 'turno-guest-1',
         profesionalId,
@@ -1417,6 +1425,7 @@ describe('POST /turnos/reservar', () => {
       });
       mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockTx));
       mockPrisma.bookingVerification.delete.mockResolvedValue({});
+      mockPrisma.passwordResetToken.create.mockResolvedValue({});
 
       const res = await request(app)
         .post('/turnos/confirmar-reserva')
@@ -1424,10 +1433,41 @@ describe('POST /turnos/reservar', () => {
         .timeout({ deadline: 1000 });
 
       expect(res.status).toBe(200);
+      // No fabricated guest-* usuarioId; a real Usuario+Paciente is created.
+      expect(mockTx.usuario.create).toHaveBeenCalled();
       expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
       expect(mockTx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
         mockTx.turno.findMany.mock.invocationCallOrder[0]
       );
+    });
+
+    it('refuses to bind a guest booking to an existing account (returns accountExists)', async () => {
+      process.env.ENABLE_GUEST_BOOKING = 'true';
+
+      const date = futureSlot();
+      const token = 'b'.repeat(32);
+      mockPrisma.bookingVerification.findUnique.mockResolvedValue({
+        token,
+        email: 'existing@test.com',
+        nombre: 'Juan',
+        apellido: 'Perez',
+        telefonoPaciente: '123456789',
+        profesionalId,
+        fechaHora: date,
+        modalidad: 'PRESENCIAL',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      mockPrisma.usuario.findUnique.mockResolvedValue({ id: 'existing-user', email: 'existing@test.com' });
+
+      const res = await request(app)
+        .post('/turnos/confirmar-reserva')
+        .send({ token })
+        .timeout({ deadline: 1000 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ accountExists: true, turno: null });
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+      expect(mockTx.turno.create).not.toHaveBeenCalled();
     });
   });
 

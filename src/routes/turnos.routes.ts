@@ -358,9 +358,18 @@ router.post('/confirmar-reserva', [
 ], asyncHandler(async (req, res) => {
   validateRequest(validationResult(req));
 
-  const turno = await confirmarReservaGuest(req.body.token);
+  const result = await confirmarReservaGuest(req.body.token);
 
-  res.json(success({ turno, message: 'Turno confirmado exitosamente' }));
+  if (result.kind === 'account_exists') {
+    res.json(success({
+      turno: null,
+      accountExists: true,
+      message: 'Ya existe una cuenta con ese email. Iniciá sesión para reservar tu turno.',
+    }));
+    return;
+  }
+
+  res.json(success({ turno: result.turno, message: 'Turno confirmado exitosamente' }));
 }));
 
 export { router as turnosRouter };

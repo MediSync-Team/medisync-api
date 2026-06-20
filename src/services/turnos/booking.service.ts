@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import bcrypt from 'bcrypt';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
@@ -35,6 +36,10 @@ export interface ReservarTurnoInput {
 export type ReservarTurnoResult =
   | { kind: 'guest_pending'; email: string }
   | { kind: 'created'; turno: Prisma.TurnoGetPayload<object> };
+
+export type ConfirmarReservaGuestResult =
+  | { kind: 'account_exists'; email: string }
+  | { kind: 'confirmed'; turno: Prisma.TurnoGetPayload<object> };
 
 /**
  * Reserve an appointment slot.
@@ -108,11 +113,14 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
   });
   if (prof?.plan === 'FREE') {
     const { start, end } = getClinicMonthBounds(clinicParts.year, clinicParts.month);
+    // Count only turnos that consume the monthly quota: active or completed.
+    // Excludes CANCELADO and AUSENTE (no-shows) so cancellations / no-shows don't
+    // wrongly exhaust a FREE plan's limit.
     const count = await prisma.turno.count({
       where: {
         profesionalId,
         fechaHora: { gte: start, lt: end },
-        estado: { notIn: ['CANCELADO'] },
+        estado: { in: ['RESERVADO', 'CONFIRMADO', 'COMPLETADO'] },
       },
     });
     if (count >= FREE_PLAN_MONTHLY_TURNO_LIMIT) {
@@ -332,10 +340,15 @@ async function notifyBookingParties(turnoId: string): Promise<void> {
 }
 
 /**
- * Confirm a guest booking via its emailed verification token: creates (or
- * reuses) the guest paciente, then books the turno under an advisory lock.
+ * Confirm a guest booking via its emailed verification token.
+ *
+ * Account model: we never fabricate a `usuarioId`. If the email already belongs
+ * to a real `Usuario`, we refuse to auto-bind the booking (would let a stranger
+ * attach turnos to someone else's account — C-A5) and ask the visitor to log in.
+ * Otherwise we create a real `Usuario` + `Paciente` (C-A4) atomically with the
+ * turno, and email a one-time link so the guest can set a password and claim it.
  */
-export async function confirmarReservaGuest(token: string) {
+export async function confirmarReservaGuest(token: string): Promise<ConfirmarReservaGuestResult> {
   if (process.env.ENABLE_GUEST_BOOKING !== 'true') {
     throw new AppError(403, 'GUEST_BOOKING_DISABLED', 'La reserva de turnos para invitados está deshabilitada temporalmente.');
   }
@@ -351,64 +364,98 @@ export async function confirmarReservaGuest(token: string) {
     throw new AppError(400, 'EXPIRED_TOKEN', 'El enlace de confirmación ha expirado');
   }
 
-  // Create or find paciente
-  let paciente = await prisma.paciente.findFirst({ where: { email: verification.email } });
-
-  if (!paciente) {
-    paciente = await prisma.paciente.create({
-      data: {
-        usuarioId: 'guest-' + verification.email,
-        nombre: verification.nombre,
-        apellido: verification.apellido,
-        email: verification.email,
-        telefono: verification.telefonoPaciente,
-        genero: 'NO_ESPECIFICADO',
-      },
-    });
+  // If the email already has an account, do NOT auto-bind. Keep the verification
+  // record so the visitor can retry after logging in.
+  const existingUsuario = await prisma.usuario.findUnique({ where: { email: verification.email } });
+  if (existingUsuario) {
+    return { kind: 'account_exists', email: verification.email };
   }
 
   // Native WebRTC migration: no external (Jitsi) link is persisted for guests either.
   const linkVideollamada = null;
+  const randomPassword = randomBytes(24).toString('hex');
+  const passwordHash = await bcrypt.hash(randomPassword, 10);
 
-  const turno = await prisma.$transaction(async (tx) => {
-    const verificationClinicParts = getClinicDateTimeParts(verification.fechaHora);
-    await acquireAppointmentDayLock(tx, verification.profesionalId, verificationClinicParts.dateKey);
+  let turno: Prisma.TurnoGetPayload<object>;
+  try {
+    turno = await prisma.$transaction(async (tx) => {
+      const verificationClinicParts = getClinicDateTimeParts(verification.fechaHora);
+      await acquireAppointmentDayLock(tx, verification.profesionalId, verificationClinicParts.dateKey);
 
-    const { start, end } = getClinicDayBoundsForInstant(verification.fechaHora);
-    const turnosDelDia = await tx.turno.findMany({
-      where: {
-        profesionalId: verification.profesionalId,
-        fechaHora: { gte: start, lt: end },
-        estado: { notIn: ['CANCELADO'] },
-      },
-      select: { fechaHora: true, duracionMin: true, estado: true },
+      const { start, end } = getClinicDayBoundsForInstant(verification.fechaHora);
+      const turnosDelDia = await tx.turno.findMany({
+        where: {
+          profesionalId: verification.profesionalId,
+          fechaHora: { gte: start, lt: end },
+          estado: { notIn: ['CANCELADO'] },
+        },
+        select: { fechaHora: true, duracionMin: true, estado: true },
+      });
+
+      if (hasAppointmentConflict(turnosDelDia, verification.fechaHora, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+        throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario ya fue reservado');
+      }
+
+      // Real account, created atomically with the turno so a slot conflict rolls
+      // back the account too.
+      const nuevoUsuario = await tx.usuario.create({
+        data: {
+          email: verification.email,
+          passwordHash,
+          rol: 'PACIENTE',
+          paciente: {
+            create: {
+              nombre: verification.nombre,
+              apellido: verification.apellido,
+              email: verification.email,
+              telefono: verification.telefonoPaciente,
+              genero: 'NO_ESPECIFICADO',
+            },
+          },
+        },
+        include: { paciente: true },
+      });
+
+      return tx.turno.create({
+        data: {
+          profesionalId: verification.profesionalId,
+          pacienteId: nuevoUsuario.paciente!.id,
+          fechaHora: verification.fechaHora,
+          modalidad: verification.modalidad as 'PRESENCIAL' | 'VIRTUAL',
+          linkVideollamada,
+          estado: 'RESERVADO',
+        },
+      });
     });
-
-    if (hasAppointmentConflict(turnosDelDia, verification.fechaHora, DEFAULT_APPOINTMENT_DURATION_MIN)) {
-      throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario ya fue reservado');
+  } catch (err) {
+    // Unique-email race: someone registered between the check and the create.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      return { kind: 'account_exists', email: verification.email };
     }
-
-    return tx.turno.create({
-      data: {
-        profesionalId: verification.profesionalId,
-        pacienteId: paciente.id,
-        fechaHora: verification.fechaHora,
-        modalidad: verification.modalidad as 'PRESENCIAL' | 'VIRTUAL',
-        linkVideollamada,
-        estado: 'RESERVADO',
-      },
-    });
-  });
+    throw err;
+  }
 
   await prisma.bookingVerification.delete({ where: { token } });
+
+  // One-time link so the guest can set a password and claim the new account.
+  const resetToken = randomBytes(32).toString('hex');
+  await prisma.passwordResetToken.create({
+    data: {
+      email: verification.email,
+      token: resetToken,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  });
+  const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const setPasswordUrl = `${baseUrl}/forgot-password?token=${resetToken}`;
 
   sendNotification(['EMAIL'], {
     event: 'BOOKING_CONFIRMED',
     title: 'Turno confirmado',
-    message: `Tu turno ha sido confirmado. Recibirás más detalles pronto.`,
+    message: 'Tu turno ha sido confirmado. Creamos una cuenta para vos: definí tu contraseña para gestionar tus turnos.',
     userEmail: verification.email,
-    meta: { turnoId: turno.id },
+    meta: { turnoId: turno.id, setPasswordUrl },
   }).catch(() => {});
 
-  return turno;
+  return { kind: 'confirmed', turno };
 }

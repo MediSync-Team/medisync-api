@@ -111,41 +111,58 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
     },
   };
 
-  try {
-    const data = await createMpPreference(preferenceData);
+  // Reserve the pago row BEFORE calling MercadoPago so the DB is the source of
+  // truth. If the MP call then fails, the reserved row simply has no
+  // mpPreferenciaId — there is never a preference created on MP's side without a
+  // matching DB record (MercadoPago has no preference-delete API to compensate).
+  const reservation = await prisma.$transaction(async (tx) => {
+    const currentPago = await tx.pago.findUnique({ where: { turnoId } });
 
-    const persistedPreference = await prisma.$transaction(async (tx) => {
-      const currentPago = await tx.pago.findUnique({ where: { turnoId } });
-
-      if (currentPago?.estado === 'APROBADO') {
-        return { needsPayment: false as const };
-      }
-
-      const preferencePaymentData = {
-        monto: precioFinal,
-        montoNeto: precioFinal,
-        estado: 'PENDIENTE' as const,
-        mpPreferenciaId: data.id,
-        cuponId,
-        montoDescuento,
-      };
-
-      if (currentPago) {
-        await tx.pago.update({ where: { turnoId }, data: preferencePaymentData });
-      } else {
-        await tx.pago.create({ data: { turnoId, ...preferencePaymentData } });
-      }
-
-      return { needsPayment: true as const };
-    });
-
-    if (!persistedPreference.needsPayment) {
-      return { kind: 'already_paid' };
+    if (currentPago?.estado === 'APROBADO') {
+      return { alreadyPaid: true as const };
     }
 
-    return { kind: 'preference', preferenciaId: data.id, initPoint: data.init_point };
+    const reservedData = {
+      monto: precioFinal,
+      montoNeto: precioFinal,
+      estado: 'PENDIENTE' as const,
+      cuponId,
+      montoDescuento,
+    };
+
+    if (currentPago) {
+      await tx.pago.update({ where: { turnoId }, data: reservedData });
+    } else {
+      await tx.pago.create({ data: { turnoId, ...reservedData } });
+    }
+
+    return { alreadyPaid: false as const };
+  });
+
+  if (reservation.alreadyPaid) {
+    return { kind: 'already_paid' };
+  }
+
+  let data;
+  try {
+    data = await createMpPreference(preferenceData);
   } catch (err) {
     console.error('Error creando preferencia MP:', err);
     throw new AppError(500, 'MP_ERROR', 'Error al crear preferencia de pago');
   }
+
+  // Attach the preference id. If this rare update fails the webhook still
+  // reconciles the payment via external_reference = turnoId, so we don't fail
+  // the request.
+  try {
+    await prisma.pago.update({ where: { turnoId }, data: { mpPreferenciaId: data.id } });
+  } catch (err) {
+    console.error('[pagos] No se pudo guardar mpPreferenciaId; el webhook reconciliará vía external_reference', {
+      turnoId,
+      mpPreferenciaId: data.id,
+      err,
+    });
+  }
+
+  return { kind: 'preference', preferenciaId: data.id, initPoint: data.init_point };
 }

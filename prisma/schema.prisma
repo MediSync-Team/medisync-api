@@ -52,6 +52,7 @@ enum EstadoListaEspera {
   NOTIFICADA
   RESUELTA
   CANCELADA
+  EXPIRADA
 }
 
 enum TipoCertificado {

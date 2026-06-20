@@ -11,6 +11,28 @@ const router = Router();
 const ALLOWED_CHANNELS = ['EMAIL', 'WHATSAPP', 'IN_APP'] as const;
 type AllowedChannel = typeof ALLOWED_CHANNELS[number];
 
+// Web Push endpoints must belong to a real browser push service. Without this
+// check a client could register an arbitrary URL and have the server POST push
+// payloads to it (SSRF-ish data exfiltration via sendWebPush).
+const ALLOWED_PUSH_HOSTS = [
+  'fcm.googleapis.com',
+  'push.services.mozilla.com', // updates.push.services.mozilla.com
+  'notify.windows.com',         // *.notify.windows.com
+  'web.push.apple.com',
+];
+
+function isAllowedPushEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  return ALLOWED_PUSH_HOSTS.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
 // ── GET /api/notifications/preferences ─────────────────────────────────────
 // Devuelve las preferencias de notificación del usuario autenticado.
 const PUSH_PREF_SELECT = {
@@ -275,6 +297,10 @@ router.post('/push/subscribe', authMiddleware(), asyncHandler(async (req: AuthRe
 
   if (!endpoint || !keys?.p256dh || !keys?.auth) {
     throw new AppError(400, 'VALIDATION_ERROR', 'endpoint, keys.p256dh y keys.auth son requeridos');
+  }
+
+  if (!isAllowedPushEndpoint(endpoint)) {
+    throw new AppError(400, 'INVALID_ENDPOINT', 'El endpoint de push no pertenece a un servicio de notificaciones válido');
   }
 
   const sub = await prisma.pushSubscription.upsert({

@@ -142,7 +142,7 @@ export async function expireStaleWaitlistNotifications() {
   // Mark all stale NOTIFICADA entries as EXPIRADA
   await prisma.listaEspera.updateMany({
     where: { id: { in: stale.map((s) => s.id) } },
-    data: { estado: 'CANCELADA' },
+    data: { estado: 'EXPIRADA' },
   });
 
   // For each expired entry, try to notify the next person in line for that slot

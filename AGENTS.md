@@ -46,7 +46,8 @@ Node.js + Express + TypeScript, Prisma ORM, PostgreSQL, JWT + bcrypt. Jest + Sup
 
 ## Key env vars
 - `DATABASE_URL`, `JWT_SECRET`, `PORT`, `NODE_ENV`
-- `FRONTEND_URL`, `FRONTEND_URLS`, `BACKEND_URL`
+- `TOKEN_ENCRYPTION_KEY` (64 hex chars / 32 bytes; encrypts Google OAuth tokens at rest — required for Google Calendar sync)
+- `FRONTEND_URL`, `FRONTEND_URLS`, `BACKEND_URL` (**`BACKEND_URL` required in production** — the MercadoPago webhook URL is built from it; no Host-header fallback in prod)
 - `CLOUDINARY_URL`
 - `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`

@@ -7,12 +7,29 @@ import { getPagoEstado, confirmarPago } from '../services/pagos/pago-query.servi
 
 const router = Router();
 
+/**
+ * Build the MercadoPago webhook URL from the trusted `BACKEND_URL` only.
+ * Falling back to the request `Host` header would let an attacker point MP's
+ * callback at an arbitrary server (SSRF / payment-data leak), so the fallback is
+ * allowed in non-production environments only.
+ */
+function resolveWebhookUrl(req: AuthRequest): string {
+  const base = process.env.BACKEND_URL?.replace(/\/+$/, '');
+  if (base) {
+    return `${base}/api/pagos/webhook`;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new AppError(500, 'CONFIG_ERROR', 'BACKEND_URL no está configurado en el servidor');
+  }
+  return `${req.protocol}://${req.get('host')}/api/pagos/webhook`;
+}
+
 router.post(
   '/crear-preferencia',
   authMiddleware('PACIENTE'),
   asyncHandler(async (req: AuthRequest, res) => {
     const { turnoId, cuponCodigo } = req.body;
-    const notificationUrl = `${process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`}/api/pagos/webhook`;
+    const notificationUrl = resolveWebhookUrl(req);
 
     const result = await createPaymentPreference({
       userId: req.user!.userId,

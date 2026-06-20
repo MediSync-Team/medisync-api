@@ -111,6 +111,12 @@ describe('waitlist service date matching', () => {
 
     await expireStaleWaitlistNotifications();
 
+    // Stale NOTIFICADA entries must be marked EXPIRADA (timeout), not CANCELADA (user action)
+    expect(mockPrisma.listaEspera.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['stale-1'] } },
+      data: { estado: 'EXPIRADA' },
+    });
+
     expect(tx.listaEspera.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         fecha: new Date('2026-05-18T03:00:00.000Z'),

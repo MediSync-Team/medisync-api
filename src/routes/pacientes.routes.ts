@@ -30,10 +30,14 @@ async function assertProfessionalPatientAccess(userId: string, pacienteId: strin
     throw new AppError(404, 'NOT_FOUND', 'Paciente no encontrado');
   }
 
+  // Only a real consult (confirmed or completed) grants access to clinical history.
+  // A bare RESERVADO that was never honored — or a CANCELADO/AUSENTE turno — must NOT
+  // give a professional permanent access to the patient's records.
   const hasRelationship = await prisma.turno.findFirst({
     where: {
       profesionalId: profesional.id,
       pacienteId,
+      estado: { in: ['CONFIRMADO', 'COMPLETADO'] },
     },
     select: { id: true },
   });

@@ -352,16 +352,20 @@ describe('payment routes appointment state consistency', () => {
       initPoint: 'https://mp.test/checkout',
       estado: 'PENDIENTE',
     });
+    // The pago row is reserved as PENDIENTE BEFORE the MP call (no preference id yet)...
     expect(mockPrisma.pago.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         turnoId,
         monto: 420,
         montoNeto: 420,
         estado: 'PENDIENTE',
-        mpPreferenciaId: 'mp-pref-1',
       }),
     });
-    expect(mockPrisma.pago.update).not.toHaveBeenCalled();
+    // ...then the preference id is attached once MP responds.
+    expect(mockPrisma.pago.update).toHaveBeenCalledWith({
+      where: { turnoId },
+      data: { mpPreferenciaId: 'mp-pref-1' },
+    });
   });
 
   it('updates non-approved payment when creating a new paid Mercado Pago preference', async () => {
@@ -376,14 +380,19 @@ describe('payment routes appointment state consistency', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ necesitaPago: true });
+    // Reservation update (PENDIENTE, no preference id yet)...
     expect(mockPrisma.pago.update).toHaveBeenCalledWith({
       where: { turnoId },
       data: expect.objectContaining({
         monto: 420,
         montoNeto: 420,
         estado: 'PENDIENTE',
-        mpPreferenciaId: 'mp-pref-1',
       }),
+    });
+    // ...and the later preference-id attach.
+    expect(mockPrisma.pago.update).toHaveBeenCalledWith({
+      where: { turnoId },
+      data: { mpPreferenciaId: 'mp-pref-1' },
     });
     expect(mockPrisma.pago.create).not.toHaveBeenCalled();
   });
