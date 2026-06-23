@@ -99,13 +99,15 @@ router.get('/:id/historia-clinica', authMiddleware('PROFESIONAL'), asyncHandler(
       profesionalId: profesional.id,
     },
     include: {
-      evolucion: true,
+      evolucion: { select: { id: true, contenido: true, updatedAt: true } },
       archivos: {
+        select: { id: true, tipo: true, nombreOriginal: true, url: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
       },
       profesional: {
-        include: {
-          especialidad: true,
+        select: {
+          id: true, nombre: true, apellido: true,
+          especialidad: { select: { nombre: true } },
         },
       },
     },
@@ -230,8 +232,13 @@ router.get('/mis-recetas', authMiddleware('PACIENTE'), asyncHandler(async (req: 
       recetaIndicacion: { isNot: null },
     },
     include: {
-      recetaIndicacion: true,
-      profesional: { include: { especialidad: true } },
+      recetaIndicacion: true, // every field is projected below — keep
+      profesional: {
+        select: {
+          nombre: true, apellido: true, fotoUrl: true,
+          especialidad: { select: { nombre: true } },
+        },
+      },
     },
     orderBy: { fechaHora: 'desc' },
   });
@@ -270,8 +277,8 @@ router.get('/mis-certificados', authMiddleware('PACIENTE'), asyncHandler(async (
       certificado: { isNot: null },
     },
     include: {
-      certificado: true,
-      profesional: { include: { especialidad: true } },
+      certificado: true, // every field is projected below — keep
+      profesional: { select: { nombre: true, apellido: true } },
     },
     orderBy: { fechaHora: 'desc' },
   });
@@ -330,8 +337,13 @@ router.get('/mis-stats', authMiddleware('PACIENTE'), asyncHandler(async (req: Au
       },
       include: {
         turno: {
-          include: {
-            profesional: { include: { especialidad: true } },
+          select: {
+            profesional: {
+              select: {
+                nombre: true, apellido: true,
+                especialidad: { select: { nombre: true } },
+              },
+            },
           },
         },
       },

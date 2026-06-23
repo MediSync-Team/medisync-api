@@ -99,9 +99,19 @@ router.get('/', asyncHandler(async (req, res) => {
   const [profesionales, dbTotal] = await Promise.all([
     prisma.profesional.findMany({
       where,
-      include: {
+      // Narrowed to the columns the homepage prof-card + capacity calc read;
+      // drops ~13 unused scalar columns (matricula, telefono, genero, notif
+      // flags, plan, mp/timestamps, …). Matters most under the realtime filter
+      // which fetches up to 500 rows.
+      select: {
+        id: true, nombre: true, apellido: true, fotoUrl: true,
+        precioConsulta: true, lugarAtencion: true, obrasSociales: true,
+        bio: true, clinicaId: true,
         especialidad: true,
-        disponibilidades: { where: { activo: true } },
+        disponibilidades: {
+          where: { activo: true },
+          select: { modalidad: true, diaSemana: true, horaInicio: true, horaFin: true },
+        },
         _count: { select: { resenas: true } },
       },
       skip,
