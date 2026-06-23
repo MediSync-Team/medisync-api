@@ -46,7 +46,15 @@ router.get('/mi-historial', authMiddleware('PACIENTE'), asyncHandler(async (req:
     prisma.turno.findMany({
       where,
       include: {
-        profesional: { include: { especialidad: true } },
+        // Narrow profesional to the fields HistorialCard renders — skip bio,
+        // obrasSociales, notif flags, plan, timestamps, etc.
+        profesional: {
+          select: {
+            id: true, nombre: true, apellido: true, fotoUrl: true,
+            matricula: true, lugarAtencion: true, telefono: true,
+            especialidad: { select: { nombre: true } },
+          },
+        },
         evolucion: true,
         recetaIndicacion: true,
         archivos: true,
@@ -90,7 +98,16 @@ router.get('/mis-turnos', authMiddleware('PACIENTE'), asyncHandler(async (req: A
   const [turnos, total] = await Promise.all([
     prisma.turno.findMany({
       where: whereClause,
-      include: { profesional: { include: { especialidad: true } } },
+      // Narrow profesional to the fields TurnoCard renders.
+      include: {
+        profesional: {
+          select: {
+            id: true, nombre: true, apellido: true, fotoUrl: true,
+            lugarAtencion: true, precioConsulta: true,
+            especialidad: { select: { nombre: true } },
+          },
+        },
+      },
       orderBy: { fechaHora: tipo === 'pasados' ? 'desc' : 'asc' },
       skip,
       take: limit,
@@ -122,7 +139,17 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
   const [turnos, total] = await Promise.all([
     prisma.turno.findMany({
       where,
-      include: { paciente: true },
+      // Identity + certificate fields only. The longitudinal clinical history
+      // (antecedentes, alergias, etc.) is fetched on demand via
+      // getHistoriaClinica, so it must not ride along on every calendar payload.
+      include: {
+        paciente: {
+          select: {
+            id: true, nombre: true, apellido: true, telefono: true,
+            email: true, dni: true, fechaNacimiento: true, obraSocial: true,
+          },
+        },
+      },
       orderBy: { fechaHora: 'asc' },
       skip,
       take: limit,

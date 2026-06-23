@@ -205,12 +205,38 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
   const { start } = getClinicMonthBounds(startMonth.year, startMonth.month);
   const { end } = getClinicMonthBounds(clinicNow.year, clinicNow.month);
 
-  // ── Revenue per month (last 12 months) ───────────────────────────────────
-  const pagosAprobados = await prisma.pago.findMany({
-    where: { estado: 'APROBADO', createdAt: { gte: start, lt: end } },
-    select: { monto: true, createdAt: true },
-  });
+  // ── Wave 1: every independent query in parallel ──────────────────────────
+  const [
+    pagosAprobados,
+    turnosRecientes,
+    turnosPorEsp,
+    topTurnosRaw,
+    totalT,
+    completados,
+    cancelados,
+  ] = await Promise.all([
+    prisma.pago.findMany({
+      where: { estado: 'APROBADO', createdAt: { gte: start, lt: end } },
+      select: { monto: true, createdAt: true },
+    }),
+    prisma.turno.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      select: { createdAt: true },
+    }),
+    prisma.turno.groupBy({ by: ['profesionalId'], _count: { id: true } }),
+    prisma.turno.groupBy({
+      by: ['profesionalId'],
+      where: { estado: 'COMPLETADO' },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 10,
+    }),
+    prisma.turno.count(),
+    prisma.turno.count({ where: { estado: 'COMPLETADO' } }),
+    prisma.turno.count({ where: { estado: 'CANCELADO' } }),
+  ]);
 
+  // ── Revenue & turnos bucketed by clinic-month ────────────────────────────
   const revenueByMonth: Record<string, number> = {};
   const turnosByMonth:  Record<string, number> = {};
   for (let i = 11; i >= 0; i--) {
@@ -224,49 +250,21 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
     const key = `${parts.year}-${String(parts.month).padStart(2, '0')}`;
     if (revenueByMonth[key] !== undefined) revenueByMonth[key] += Number(p.monto);
   }
-
-  // ── Turnos por mes ────────────────────────────────────────────────────────
-  const turnosRecientes = await prisma.turno.findMany({
-    where: { createdAt: { gte: start, lt: end } },
-    select: { createdAt: true },
-  });
   for (const t of turnosRecientes) {
     const parts = getClinicDateTimeParts(t.createdAt);
     const key = `${parts.year}-${String(parts.month).padStart(2, '0')}`;
     if (turnosByMonth[key] !== undefined) turnosByMonth[key]++;
   }
 
-  // ── Turnos por especialidad ───────────────────────────────────────────────
-  const turnosPorEsp = await prisma.turno.groupBy({
-    by: ['profesionalId'],
-    _count: { id: true },
-  });
   const profIds = turnosPorEsp.map(t => t.profesionalId);
-  const profs   = await prisma.profesional.findMany({
-    where: { id: { in: profIds } },
-    select: { id: true, especialidad: { select: { nombre: true } } },
-  });
-  const espMap: Record<string, number> = {};
-  const profEspMap = Object.fromEntries(profs.map(p => [p.id, p.especialidad.nombre]));
-  for (const row of turnosPorEsp) {
-    const esp = profEspMap[row.profesionalId] ?? 'Sin especialidad';
-    espMap[esp] = (espMap[esp] ?? 0) + row._count.id;
-  }
-  const turnosPorEspecialidad = Object.entries(espMap)
-    .map(([especialidad, total]) => ({ especialidad, total }))
-    .sort((a, b) => b.total - a.total);
+  const topIds  = topTurnosRaw.map(r => r.profesionalId);
 
-  // ── Top 10 profesionales ──────────────────────────────────────────────────
-  const topTurnosRaw = await prisma.turno.groupBy({
-    by: ['profesionalId'],
-    where: { estado: 'COMPLETADO' },
-    _count: { id: true },
-    orderBy: { _count: { id: 'desc' } },
-    take: 10,
-  });
-  const topIds = topTurnosRaw.map(r => r.profesionalId);
-
-  const [topProfsData, topRevenue] = await Promise.all([
+  // ── Wave 2: lookups that depend on the grouped ids, in parallel ──────────
+  const [profs, topProfsData, topRevenue] = await Promise.all([
+    prisma.profesional.findMany({
+      where: { id: { in: profIds } },
+      select: { id: true, especialidad: { select: { nombre: true } } },
+    }),
     prisma.profesional.findMany({
       where: { id: { in: topIds } },
       select: {
@@ -298,6 +296,18 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
     }),
   ]);
 
+  // ── Turnos por especialidad ───────────────────────────────────────────────
+  const espMap: Record<string, number> = {};
+  const profEspMap = Object.fromEntries(profs.map(p => [p.id, p.especialidad.nombre]));
+  for (const row of turnosPorEsp) {
+    const esp = profEspMap[row.profesionalId] ?? 'Sin especialidad';
+    espMap[esp] = (espMap[esp] ?? 0) + row._count.id;
+  }
+  const turnosPorEspecialidad = Object.entries(espMap)
+    .map(([especialidad, total]) => ({ especialidad, total }))
+    .sort((a, b) => b.total - a.total);
+
+  // ── Top 10 profesionales ──────────────────────────────────────────────────
   const topProfMap = Object.fromEntries(topProfsData.map(p => [p.id, p]));
   const topProfesionales = topTurnosRaw.map(r => ({
     id:              r.profesionalId,
@@ -316,11 +326,6 @@ router.get('/analytics', asyncHandler(async (_req, res) => {
   const turnosByMonthSeries = Object.entries(turnosByMonth).map(([month, count]) => ({ month, count }));
 
   // ── Tasa de completado ────────────────────────────────────────────────────
-  const [totalT, completados, cancelados] = await Promise.all([
-    prisma.turno.count(),
-    prisma.turno.count({ where: { estado: 'COMPLETADO' } }),
-    prisma.turno.count({ where: { estado: 'CANCELADO' } }),
-  ]);
   const tasaCompletado  = totalT > 0 ? Math.round((completados / totalT) * 100) : 0;
   const tasaCancelacion = totalT > 0 ? Math.round((cancelados  / totalT) * 100) : 0;
 
