@@ -5,6 +5,8 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
+import { geocodeAddress } from '../services/geocoding.service';
+import { haversineKm, boundingBox, isValidCoord } from '../utils/geo';
 import {
   addDaysToClinicDate,
   formatClinicDateKey,
@@ -24,12 +26,29 @@ router.get('/', asyncHandler(async (req, res) => {
     disponibleEstaSemana,
     obraSocial,
     orderBy: orderByParam,
+    lat,
+    lng,
+    distanciaKm,
   } = req.query;
 
   const filterDisponible = disponibleEstaSemana === 'true';
   const { page: pageNum, limit: limitNum } = parsePagination(req);
 
+  // Distance filter: only for presencial searches with valid coords + radius.
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  const radioNum = Number(distanciaKm);
+  const distActivo =
+    modalidad !== 'VIRTUAL' && isValidCoord(latNum, lngNum) && Number.isFinite(radioNum) && radioNum > 0;
+
   const where: any = { activo: true };
+
+  if (distActivo) {
+    // Cheap bounding-box prefilter; the exact haversine pass runs in JS below.
+    const box = boundingBox(latNum, lngNum, radioNum);
+    where.latitud = { gte: box.minLat, lte: box.maxLat };
+    where.longitud = { gte: box.minLng, lte: box.maxLng };
+  }
 
   if (especialidad) {
     where.especialidad = { nombre: { contains: String(especialidad), mode: 'insensitive' } };
@@ -92,7 +111,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
   // When real-time availability filter is on, we fetch all matches and post-filter.
   // Otherwise use normal DB-level pagination.
-  const fetchAll = filterDisponible;
+  const fetchAll = filterDisponible || distActivo;
   const skip = fetchAll ? 0 : (pageNum - 1) * limitNum;
   const take = fetchAll ? 500 : limitNum;
 
@@ -106,7 +125,7 @@ router.get('/', asyncHandler(async (req, res) => {
       select: {
         id: true, nombre: true, apellido: true, fotoUrl: true,
         precioConsulta: true, lugarAtencion: true, obrasSociales: true,
-        bio: true, clinicaId: true,
+        bio: true, clinicaId: true, latitud: true, longitud: true,
         especialidad: true,
         disponibilidades: {
           where: { activo: true },
@@ -137,6 +156,7 @@ router.get('/', asyncHandler(async (req, res) => {
       ...p,
       ratingPromedio: r ? Number(r._avg.rating?.toFixed(1)) : null,
       totalResenas: r ? r._count.rating : 0,
+      distanciaKm: null as number | null,
     };
   });
 
@@ -185,6 +205,23 @@ router.get('/', asyncHandler(async (req, res) => {
       const booked    = bookedMap.get(prof.id) ?? 0;
       return capacidad > booked;
     });
+  }
+
+  // ── Distance filter (exact haversine over the bounding-box prefilter) ──────
+  if (distActivo) {
+    const origen = { lat: latNum, lng: lngNum };
+    profesionalesConRating = profesionalesConRating
+      .map((p) => ({
+        ...p,
+        distanciaKm:
+          p.latitud != null && p.longitud != null
+            ? Math.round(haversineKm(origen, { lat: p.latitud, lng: p.longitud }) * 10) / 10
+            : null,
+      }))
+      .filter((p) => p.distanciaKm != null && p.distanciaKm <= radioNum);
+    if (orderByParam === 'distancia') {
+      profesionalesConRating.sort((a, b) => (a.distanciaKm ?? Infinity) - (b.distanciaKm ?? Infinity));
+    }
   }
 
   // Paginate post-filtered results when fetchAll was used
@@ -249,6 +286,23 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
     }
   }
 
+  // Geocode the practice address when it changes, so search can filter by
+  // distance. Never blocks the save: failures store null coords.
+  let geoData: { latitud?: number | null; longitud?: number | null; geocodedAt?: Date | null } = {};
+  if (lugarAtencion !== undefined) {
+    const nuevoLugar = lugarAtencion?.trim() || null;
+    if (nuevoLugar !== (profesionalOwner.lugarAtencion ?? null)) {
+      if (!nuevoLugar) {
+        geoData = { latitud: null, longitud: null, geocodedAt: null };
+      } else {
+        const point = await geocodeAddress(nuevoLugar);
+        geoData = point
+          ? { latitud: point.lat, longitud: point.lng, geocodedAt: new Date() }
+          : { latitud: null, longitud: null, geocodedAt: new Date() };
+      }
+    }
+  }
+
   const profesional = await prisma.profesional.update({
     where: { id: req.params.id },
     data: {
@@ -258,6 +312,7 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
       telefono,
       genero: genero || 'NO_ESPECIFICADO',
       lugarAtencion,
+      ...geoData,
       precioConsulta,
       fotoUrl,
       matricula,

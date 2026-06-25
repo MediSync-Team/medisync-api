@@ -195,6 +195,9 @@ model Profesional {
   precioConsulta  Decimal  @default(0) @map("precio_consulta") @db.Decimal(10, 2)
   bio             String?
   lugarAtencion   String?  @map("lugar_atencion")
+  latitud         Float?   @map("latitud")
+  longitud        Float?   @map("longitud")
+  geocodedAt      DateTime? @map("geocoded_at")
   obrasSociales   String[] @map("obras_sociales")
   fotoUrl         String?  @map("foto_url")
   activo          Boolean  @default(true)

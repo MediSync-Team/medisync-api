@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "seed": "tsx prisma/seed.ts",
+    "geocode:backfill": "tsx scripts/geocode-backfill.ts",
     "smoke:sprint1": "tsx src/scripts/smoke-sprint1.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
