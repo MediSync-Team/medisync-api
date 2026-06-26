@@ -222,8 +222,28 @@ model Profesional {
   bloqueos         BloqueoDisponibilidad[]
   cupones          Cupon[]
   auditoria        AuditoriaDisponibilidad[]
+  tiposConsulta    TipoConsulta[]
 
   @@map("profesional")
+}
+
+model TipoConsulta {
+  id            String   @id @default(uuid())
+  profesionalId String   @map("profesional_id")
+  nombre        String
+  duracionMin   Int      @map("duracion_min")
+  precio        Decimal? @db.Decimal(10, 2)
+  color         String?
+  activo        Boolean  @default(true)
+  orden         Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  profesional   Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+  turnos        Turno[]
+
+  @@index([profesionalId])
+  @@map("tipo_consulta")
 }
 
 model Disponibilidad {
@@ -282,6 +302,7 @@ model Turno {
   id                  String      @id @default(uuid())
   profesionalId       String      @map("profesional_id")
   pacienteId          String?     @map("paciente_id")
+  tipoConsultaId      String?     @map("tipo_consulta_id")
   fechaHora           DateTime    @map("fecha_hora")
   duracionMin         Int         @default(30) @map("duracion_min")
   modalidad           Modalidad
@@ -307,6 +328,7 @@ model Turno {
 
   profesional  Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
   paciente     Paciente?   @relation(fields: [pacienteId], references: [id], onDelete: SetNull)
+  tipoConsulta TipoConsulta? @relation(fields: [tipoConsultaId], references: [id], onDelete: SetNull)
 
   evolucion    Evolucion?
   recetaIndicacion RecetaIndicacion?
@@ -587,6 +609,8 @@ model BookingVerification {
   nombre            String
   apellido          String
   profesionalId     String   @map("profesional_id")
+  tipoConsultaId    String?  @map("tipo_consulta_id")
+  duracionMin       Int      @default(30) @map("duracion_min")
   fechaHora         DateTime @map("fecha_hora")
   modalidad         String
   telefonoPaciente  String?  @map("telefono_paciente")

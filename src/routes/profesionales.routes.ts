@@ -5,6 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
+import { SLOT_GRID_STEP_MIN } from '../utils/appointment-conflicts';
 import { geocodeAddress } from '../services/geocoding.service';
 import { haversineKm, boundingBox, isValidCoord } from '../utils/geo';
 import {
@@ -448,17 +449,95 @@ router.get('/:id/auditoria', authMiddleware('PROFESIONAL'), asyncHandler(async (
 }));
 
 router.get('/:id/slots-disponibles', asyncHandler(async (req, res) => {
-  const { fecha, modalidad } = req.query;
+  const { fecha, modalidad, tipoConsultaId } = req.query;
   if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
   }
+
+  let duracionMin: number | undefined;
+  if (tipoConsultaId) {
+    const tipo = await prisma.tipoConsulta.findFirst({
+      where: { id: String(tipoConsultaId), profesionalId: req.params.id, activo: true },
+    });
+    if (!tipo) throw new AppError(400, 'TIPO_CONSULTA_INVALIDO', 'El tipo de consulta seleccionado no es válido');
+    duracionMin = tipo.duracionMin;
+  }
+
   const slots = await getAvailableSlotsForProfessional({
     profesionalId: req.params.id,
     fecha,
     modalidad: modalidad ? String(modalidad) : undefined,
+    duracionMin,
   });
 
   res.json(success(slots));
+}));
+
+// ── Tipos de consulta (duración variable) ──────────────────────────────────
+
+// Public: active consultation types for a professional (used in the booking flow).
+router.get('/:id/tipos-consulta', asyncHandler(async (req, res) => {
+  const tipos = await prisma.tipoConsulta.findMany({
+    where: { profesionalId: req.params.id, activo: true },
+    orderBy: [{ orden: 'asc' }, { createdAt: 'asc' }],
+  });
+  res.json(success(tipos));
+}));
+
+function validateTipoConsultaBody(body: any): { nombre: string; duracionMin: number; precio: number | null; color: string | null; orden: number } {
+  const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
+  if (!nombre) throw new AppError(400, 'VALIDATION_ERROR', 'El nombre es requerido');
+  const duracionMin = Number(body.duracionMin);
+  if (!Number.isInteger(duracionMin) || duracionMin < SLOT_GRID_STEP_MIN || duracionMin % SLOT_GRID_STEP_MIN !== 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', `La duración debe ser un múltiplo de ${SLOT_GRID_STEP_MIN} minutos`);
+  }
+  const precio = body.precio === undefined || body.precio === null || body.precio === '' ? null : Number(body.precio);
+  if (precio !== null && (Number.isNaN(precio) || precio < 0)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Precio inválido');
+  }
+  const color = typeof body.color === 'string' && body.color.trim() ? body.color.trim() : null;
+  const orden = Number.isInteger(body.orden) ? body.orden : 0;
+  return { nombre, duracionMin, precio, color, orden };
+}
+
+router.post('/:id/tipos-consulta', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para gestionar tipos de consulta');
+  }
+  const data = validateTipoConsultaBody(req.body);
+  const tipo = await prisma.tipoConsulta.create({
+    data: { profesionalId: req.params.id, ...data },
+  });
+  res.status(201).json(success(tipo));
+}));
+
+router.patch('/:id/tipos-consulta/:tipoId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para gestionar tipos de consulta');
+  }
+  const existing = await prisma.tipoConsulta.findUnique({ where: { id: req.params.tipoId } });
+  if (!existing || existing.profesionalId !== req.params.id) {
+    throw new AppError(404, 'NOT_FOUND', 'Tipo de consulta no encontrado');
+  }
+  const data = validateTipoConsultaBody(req.body);
+  const tipo = await prisma.tipoConsulta.update({ where: { id: req.params.tipoId }, data });
+  res.json(success(tipo));
+}));
+
+// Soft delete: keep the row so historical turnos keep their tipoConsulta reference.
+router.delete('/:id/tipos-consulta/:tipoId', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para eliminar tipos de consulta');
+  }
+  const existing = await prisma.tipoConsulta.findUnique({ where: { id: req.params.tipoId } });
+  if (!existing || existing.profesionalId !== req.params.id) {
+    throw new AppError(404, 'NOT_FOUND', 'Tipo de consulta no encontrado');
+  }
+  await prisma.tipoConsulta.update({ where: { id: req.params.tipoId }, data: { activo: false } });
+  res.json(success({ deleted: true }));
 }));
 
 export { router as profesionalesRouter };

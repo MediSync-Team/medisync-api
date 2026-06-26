@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
 import {
   DEFAULT_APPOINTMENT_DURATION_MIN,
+  SLOT_GRID_STEP_MIN,
   findMatchingAvailability,
   hasAppointmentConflict,
   hasBlockConflict,
@@ -49,8 +50,8 @@ export async function reprogramarTurno(input: ReprogramarTurnoInput) {
 
   const nuevaClinicParts = getClinicDateTimeParts(nuevaFechaHora);
 
-  if (nuevaClinicParts.minute !== 0 && nuevaClinicParts.minute !== 30) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
+  if (nuevaClinicParts.minute % SLOT_GRID_STEP_MIN !== 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', `El horario debe alinearse a bloques de ${SLOT_GRID_STEP_MIN} minutos`);
   }
 
   const nuevaModalidad = modalidad || undefined;

@@ -675,11 +675,11 @@ describe('POST /turnos/reservar', () => {
     expect(mockTx.turno.create).toHaveBeenCalled();
   });
 
-  it('rejects non half-hour slot times', async () => {
+  it('rejects slot times off the 15-minute grid', async () => {
     const res = await request(app)
       .post('/turnos/reservar')
       .set('Authorization', `Bearer ${tokenFor('PACIENTE')}`)
-      .send(bookingPayload(futureSlot(10, 15)))
+      .send(bookingPayload(futureSlot(10, 10)))
       .timeout({ deadline: 500 });
 
     expect(res.status).toBe(400);
@@ -833,8 +833,11 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
       { hora: '09:00', disponible: true, lugarAtencion: null },
+      { hora: '09:15', disponible: false, lugarAtencion: null },
       { hora: '09:30', disponible: false, lugarAtencion: null },
+      { hora: '09:45', disponible: false, lugarAtencion: null },
       { hora: '10:00', disponible: false, lugarAtencion: null },
+      { hora: '10:15', disponible: false, lugarAtencion: null },
       { hora: '10:30', disponible: true, lugarAtencion: null },
     ]);
   });
@@ -862,7 +865,9 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
       { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio legacy' },
+      { hora: '09:45', disponible: true, lugarAtencion: 'Consultorio legacy' },
       { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio legacy' },
+      { hora: '10:15', disponible: false, lugarAtencion: 'Consultorio legacy' },
       { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio legacy' },
     ]);
   });
@@ -906,7 +911,9 @@ describe('POST /turnos/reservar', () => {
     expect(legacyRes.body.data).toEqual(professionalRes.body.data);
     expect(legacyRes.body.data).toEqual([
       { hora: '09:30', disponible: false, lugarAtencion: 'Consultorio compartido' },
+      { hora: '09:45', disponible: false, lugarAtencion: 'Consultorio compartido' },
       { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio compartido' },
+      { hora: '10:15', disponible: false, lugarAtencion: 'Consultorio compartido' },
       { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio compartido' },
     ]);
   });
@@ -961,7 +968,9 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
       { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio' },
+      { hora: '09:45', disponible: true, lugarAtencion: 'Consultorio' },
       { hora: '10:00', disponible: false, lugarAtencion: 'Consultorio' },
+      { hora: '10:15', disponible: false, lugarAtencion: 'Consultorio' },
       { hora: '10:30', disponible: false, lugarAtencion: 'Consultorio' },
     ]);
   });
@@ -987,7 +996,9 @@ describe('POST /turnos/reservar', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([
       { hora: '09:00', disponible: true, lugarAtencion: 'Consultorio corto' },
+      { hora: '09:15', disponible: true, lugarAtencion: 'Consultorio corto' },
       { hora: '09:30', disponible: true, lugarAtencion: 'Consultorio corto' },
+      { hora: '09:45', disponible: true, lugarAtencion: 'Consultorio corto' },
     ]);
   });
 

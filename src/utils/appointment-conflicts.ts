@@ -1,5 +1,8 @@
 export const DEFAULT_APPOINTMENT_DURATION_MIN = 30;
 
+/** Grid step (minutes) for offering bookable start times. */
+export const SLOT_GRID_STEP_MIN = 15;
+
 export type AppointmentConflictCandidate = {
   fechaHora: Date;
   duracionMin?: number | null;

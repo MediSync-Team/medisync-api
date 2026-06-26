@@ -161,15 +161,26 @@ router.get('/profesional/:profesionalId', authMiddleware('PROFESIONAL'), asyncHa
 }));
 
 router.get('/profesional/:profesionalId/slots-disponibles', asyncHandler(async (req, res) => {
-  const { fecha, modalidad } = req.query;
+  const { fecha, modalidad, tipoConsultaId } = req.query;
   const fechaStr = String(fecha);
   if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'fecha es requerida y debe tener formato YYYY-MM-DD');
   }
+
+  let duracionMin: number | undefined;
+  if (tipoConsultaId) {
+    const tipo = await prisma.tipoConsulta.findFirst({
+      where: { id: String(tipoConsultaId), profesionalId: req.params.profesionalId, activo: true },
+    });
+    if (!tipo) throw new AppError(400, 'TIPO_CONSULTA_INVALIDO', 'El tipo de consulta seleccionado no es válido');
+    duracionMin = tipo.duracionMin;
+  }
+
   const slots = await getAvailableSlotsForProfessional({
     profesionalId: req.params.profesionalId,
     fecha: fechaStr,
     modalidad: modalidad ? String(modalidad) : undefined,
+    duracionMin,
   });
 
   res.json(success(slots));
@@ -206,6 +217,7 @@ router.post(
     body('profesionalId').isUUID(),
     body('fechaHora').isISO8601(),
     body('modalidad').isIn(['PRESENCIAL', 'VIRTUAL']),
+    body('tipoConsultaId').optional().isUUID(),
   ],
   asyncHandler(async (req: AuthRequest, res) => {
     if (req.user && req.user.rol !== 'PACIENTE') {
@@ -218,13 +230,14 @@ router.post(
     }
     validateRequest(validationResult(req));
 
-    const { profesionalId, fechaHora, modalidad, email, pacienteData } = req.body;
+    const { profesionalId, fechaHora, modalidad, tipoConsultaId, email, pacienteData } = req.body;
 
     const result = await reservarTurno({
       userId: req.user?.userId ?? null,
       profesionalId,
       fechaHora,
       modalidad,
+      tipoConsultaId,
       guestEmail: email,
       guestData: pacienteData,
     });

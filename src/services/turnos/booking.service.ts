@@ -7,6 +7,7 @@ import { sendNotification } from '../../utils/notifications';
 import { resolveWaitlistForBooking } from '../waitlist.service';
 import {
   DEFAULT_APPOINTMENT_DURATION_MIN,
+  SLOT_GRID_STEP_MIN,
   findMatchingAvailability,
   hasAppointmentConflict,
   hasBlockConflict,
@@ -23,12 +24,29 @@ import { notifyTurnoUser } from './turno-helpers';
 
 const FREE_PLAN_MONTHLY_TURNO_LIMIT = 20;
 
+/**
+ * Resolve the appointment duration from a chosen TipoConsulta. Validates that the
+ * type belongs to the professional and is active. Returns the default 30 min when
+ * no type is supplied (back-compat).
+ */
+async function resolveDuracionMin(profesionalId: string, tipoConsultaId?: string | null): Promise<number> {
+  if (!tipoConsultaId) return DEFAULT_APPOINTMENT_DURATION_MIN;
+  const tipo = await prisma.tipoConsulta.findFirst({
+    where: { id: tipoConsultaId, profesionalId, activo: true },
+  });
+  if (!tipo) {
+    throw new AppError(400, 'TIPO_CONSULTA_INVALIDO', 'El tipo de consulta seleccionado no es válido');
+  }
+  return tipo.duracionMin;
+}
+
 export interface ReservarTurnoInput {
   /** Authenticated paciente's usuario id, or `null` for a guest booking. */
   userId: string | null;
   profesionalId: string;
   fechaHora: string;
   modalidad: 'PRESENCIAL' | 'VIRTUAL';
+  tipoConsultaId?: string | null;
   guestEmail?: string;
   guestData?: { nombre?: string; apellido?: string; telefono?: string };
 }
@@ -64,14 +82,16 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
 
   const clinicParts = getClinicDateTimeParts(fechaHoraDate);
 
-  if (clinicParts.minute !== 0 && clinicParts.minute !== 30) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'El horario debe ser en bloques de 30 minutos');
+  if (clinicParts.minute % SLOT_GRID_STEP_MIN !== 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', `El horario debe alinearse a bloques de ${SLOT_GRID_STEP_MIN} minutos`);
   }
 
   const profesional = await prisma.profesional.findUnique({ where: { id: profesionalId } });
   if (!profesional || !profesional.activo) {
     throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
   }
+
+  const duracionMin = await resolveDuracionMin(profesionalId, input.tipoConsultaId);
 
   let paciente: Prisma.PacienteGetPayload<object> | null = null;
   if (userId) {
@@ -86,7 +106,7 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
   const dispSlots = await prisma.disponibilidad.findMany({
     where: { profesionalId, diaSemana: diaSemanaBooking, activo: true },
   });
-  const matchingDisp = findMatchingAvailability(dispSlots, modalidad, bookingStartMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
+  const matchingDisp = findMatchingAvailability(dispSlots, modalidad, bookingStartMinutes, duracionMin);
 
   if (!matchingDisp) {
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
@@ -102,7 +122,7 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
   });
   if (bloqueos.length > 0) {
     const slotMinutes = clinicParts.hour * 60 + clinicParts.minute;
-    const bloqueado = hasBlockConflict(bloqueos, slotMinutes, DEFAULT_APPOINTMENT_DURATION_MIN);
+    const bloqueado = hasBlockConflict(bloqueos, slotMinutes, duracionMin);
     if (bloqueado) throw new AppError(409, 'HORARIO_BLOQUEADO', 'El profesional no está disponible en ese horario');
   }
 
@@ -133,7 +153,7 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
   }
 
   if (!userId) {
-    return reservarGuest(input, fechaHoraDate, profesionalId);
+    return reservarGuest(input, fechaHoraDate, profesionalId, duracionMin);
   }
 
   // Native WebRTC migration: no external (Jitsi) link is persisted. Virtual turnos
@@ -156,7 +176,7 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
         select: { fechaHora: true, duracionMin: true, estado: true },
       });
 
-      if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+      if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, duracionMin)) {
         throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
       }
 
@@ -164,6 +184,8 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
         data: {
           profesionalId,
           pacienteId: paciente!.id,
+          tipoConsultaId: input.tipoConsultaId ?? null,
+          duracionMin,
           fechaHora: fechaHoraDate,
           modalidad,
           linkVideollamada,
@@ -196,7 +218,8 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
 async function reservarGuest(
   input: ReservarTurnoInput,
   fechaHoraDate: Date,
-  profesionalId: string
+  profesionalId: string,
+  duracionMin: number
 ): Promise<ReservarTurnoResult> {
   if (process.env.ENABLE_GUEST_BOOKING !== 'true') {
     throw new AppError(403, 'GUEST_BOOKING_DISABLED', 'La reserva de turnos para invitados está deshabilitada temporalmente.');
@@ -222,7 +245,7 @@ async function reservarGuest(
     select: { fechaHora: true, duracionMin: true, estado: true },
   });
 
-  if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+  if (hasAppointmentConflict(turnosDelDia, fechaHoraDate, duracionMin)) {
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado ya fue reservado');
   }
 
@@ -234,6 +257,8 @@ async function reservarGuest(
       nombre: pacienteData.nombre,
       apellido: pacienteData.apellido,
       profesionalId,
+      tipoConsultaId: input.tipoConsultaId ?? null,
+      duracionMin,
       fechaHora: fechaHoraDate,
       modalidad: input.modalidad,
       telefonoPaciente: pacienteData.telefono,
@@ -392,7 +417,7 @@ export async function confirmarReservaGuest(token: string): Promise<ConfirmarRes
         select: { fechaHora: true, duracionMin: true, estado: true },
       });
 
-      if (hasAppointmentConflict(turnosDelDia, verification.fechaHora, DEFAULT_APPOINTMENT_DURATION_MIN)) {
+      if (hasAppointmentConflict(turnosDelDia, verification.fechaHora, verification.duracionMin)) {
         throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario ya fue reservado');
       }
 
@@ -420,6 +445,8 @@ export async function confirmarReservaGuest(token: string): Promise<ConfirmarRes
         data: {
           profesionalId: verification.profesionalId,
           pacienteId: nuevoUsuario.paciente!.id,
+          tipoConsultaId: verification.tipoConsultaId,
+          duracionMin: verification.duracionMin,
           fechaHora: verification.fechaHora,
           modalidad: verification.modalidad as 'PRESENCIAL' | 'VIRTUAL',
           linkVideollamada,
