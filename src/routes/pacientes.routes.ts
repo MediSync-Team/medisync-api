@@ -50,7 +50,10 @@ async function assertProfessionalPatientAccess(userId: string, pacienteId: strin
 }
 
 router.put('/perfil', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthRequest, res) => {
-  const { nombre, apellido, telefono, genero, fechaNacimiento, dni, obraSocial, fotoUrl } = req.body;
+  const {
+    nombre, apellido, telefono, genero, fechaNacimiento, dni, obraSocial, fotoUrl,
+    antecedentesPersonales, antecedentesFamiliares, alergias, medicacionActual, habitos, diagnosticosPrevios,
+  } = req.body;
 
   if (telefono && !/^[\d\s\-\+\(\)]{8,20}$/.test(telefono)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'El teléfono tiene un formato inválido');
@@ -77,6 +80,12 @@ router.put('/perfil', authMiddleware('PACIENTE'), asyncHandler(async (req: AuthR
       dni: dni || null,
       obraSocial: obraSocial || null,
       fotoUrl: fotoUrl || null,
+      antecedentesPersonales: antecedentesPersonales ?? undefined,
+      antecedentesFamiliares: antecedentesFamiliares ?? undefined,
+      alergias: alergias ?? undefined,
+      medicacionActual: medicacionActual ?? undefined,
+      habitos: habitos ?? undefined,
+      diagnosticosPrevios: diagnosticosPrevios ?? undefined,
     },
   });
 
