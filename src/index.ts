@@ -8,8 +8,6 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import cron from 'node-cron';
-import { WebSocketServer } from 'ws';
-import { handleVideoConnection } from './services/video-room.service';
 import { authRouter } from './routes/auth.routes';
 import { especialidadesRouter } from './routes/especialidades.routes';
 import { profesionalesRouter } from './routes/profesionales.routes';
@@ -139,24 +137,14 @@ app.use('/api/obras-sociales', obrasSocialesRouter);
 
 app.use(errorHandler);
 
-// ── HTTP server + WebSocket signaling ──────────────────────────────────────
+// ── HTTP server ────────────────────────────────────────────────────────────
+// Video signaling now runs through the LiveKit SFU (services/livekit.service.ts),
+// so the API no longer hosts a WebSocket server and stays stateless for video.
 const httpServer = http.createServer(app);
-
-const wss = new WebSocketServer({ server: httpServer, path: '/ws/video' });
-wss.on('connection', (ws, req) => {
-  try {
-    const url = new URL(req.url ?? '', 'http://localhost');
-    const ticket = url.searchParams.get('ticket') ?? '';
-    handleVideoConnection(ws, ticket);
-  } catch {
-    ws.close(4000, 'Bad request');
-  }
-});
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📚 API: http://localhost:${PORT}/api`);
-  console.log(`📹 Video WS: ws://localhost:${PORT}/ws/video`);
 });
 
 const reminderJob = cron.schedule('*/30 * * * *', async () => {

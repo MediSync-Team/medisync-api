@@ -3,8 +3,7 @@ import { body, validationResult } from 'express-validator';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, error, AppError } from '../utils/response';
 import { authMiddleware, optionalAuthMiddleware, AuthRequest } from '../middleware/auth.middleware';
-import { issueVideoTicket } from '../services/video-room.service';
-import { getIceServers } from '../services/turn.service';
+import { createVideoAccess } from '../services/livekit.service';
 import { getAvailableSlotsForProfessional } from '../services/slot-availability.service';
 import {
   syncTurnoCreated, syncTurnoRescheduled, syncTurnoCancelled,
@@ -347,10 +346,11 @@ router.post('/:id/receta', authMiddleware('PROFESIONAL'), asyncHandler(async (re
 
 /**
  * GET /turnos/:id/video-token
- * Issues a short-lived WebSocket ticket for the native video room.
+ * Issues a short-lived LiveKit access token (JWT) scoped to the turno's room.
+ * The client connects directly to the LiveKit SFU; the API stays stateless.
  */
 router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
-  const { turno } = await assertTurnoAccess(req.params.id, req.user!.userId);
+  const { turno, isPacienteOwner } = await assertTurnoAccess(req.params.id, req.user!.userId);
 
   if (turno.modalidad !== 'VIRTUAL') {
     throw new AppError(400, 'NOT_VIRTUAL', 'Este turno no es virtual');
@@ -369,9 +369,12 @@ router.get('/:id/video-token', authMiddleware(), asyncHandler(async (req: AuthRe
     throw new AppError(403, 'OUTSIDE_JOIN_WINDOW', 'La videollamada está disponible desde 15 minutos antes del turno y hasta que finaliza');
   }
 
-  const ticket = issueVideoTicket(turno.id, req.user!.userId);
-  const iceServers = await getIceServers();
-  res.json(success({ ticket, roomId: turno.id, iceServers }));
+  // The room is the turno; identity is the requesting user. The web/mobile
+  // clients connect straight to the LiveKit SFU with this token — no signaling
+  // passes through the API anymore.
+  const displayName = isPacienteOwner ? 'Paciente' : 'Profesional';
+  const access = await createVideoAccess(turno.id, req.user!.userId, displayName);
+  res.json(success(access));
 }));
 
 router.get('/:id/auditoria-cancelacion', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {

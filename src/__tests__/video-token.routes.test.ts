@@ -14,6 +14,17 @@ jest.mock('../lib/prisma', () => ({
   default: mockPrisma,
 }));
 
+// bcrypt is a native addon pulled in transitively (booking.service); this route
+// never uses it, so stub it to keep the suite hermetic (no native-binary load).
+jest.mock('bcrypt', () => ({
+  hash: jest.fn(async () => 'hashed'),
+  hashSync: jest.fn(() => 'hashed'),
+  compare: jest.fn(async () => true),
+  compareSync: jest.fn(() => true),
+  genSalt: jest.fn(async () => 'salt'),
+  genSaltSync: jest.fn(() => 'salt'),
+}));
+
 // Keep the router's dependency graph cheap + deterministic.
 jest.mock('../utils/notifications', () => ({
   sendNotification: jest.fn(async () => undefined),
@@ -37,13 +48,15 @@ jest.mock('../services/calendar-sync.service', () => ({
 jest.mock('../services/preconsulta.service', () => ({
   analyzePreconsulta: jest.fn(async () => null),
 }));
-jest.mock('../services/video-room.service', () => ({
-  issueVideoTicket: jest.fn(() => 'ticket-x'),
-}));
 
-const STUN_STUB = [{ urls: 'stun:stun.l.google.com:19302' }];
-jest.mock('../services/turn.service', () => ({
-  getIceServers: jest.fn(async () => STUN_STUB),
+// LiveKit token minting is unit-tested separately (livekit.service.test.ts);
+// here we stub it to focus on the route's access guards + response wiring.
+jest.mock('../services/livekit.service', () => ({
+  createVideoAccess: jest.fn(async (turnoId: string) => ({
+    token: 'lk-token',
+    url: 'wss://livekit.example',
+    roomName: turnoId,
+  })),
 }));
 
 import { turnosRouter } from '../routes/turnos.routes';
@@ -143,16 +156,16 @@ describe('GET /turnos/:id/video-token', () => {
     expect(res.body.error?.code).toBe('OUTSIDE_JOIN_WINDOW');
   });
 
-  it('returns a ticket and WebRTC ICE servers inside the join window', async () => {
+  it('returns a LiveKit token + url + room inside the join window', async () => {
     mockTurno({ modalidad: 'VIRTUAL', estado: 'CONFIRMADO', fechaHora: new Date() });
 
     const res = await getVideoToken(app, pacienteUsuarioId);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
-      ticket: 'ticket-x',
-      roomId: turnoId,
-      iceServers: STUN_STUB,
+      token: 'lk-token',
+      url: 'wss://livekit.example',
+      roomName: turnoId,
     });
   });
 
@@ -165,6 +178,6 @@ describe('GET /turnos/:id/video-token', () => {
       .timeout({ deadline: 1000 });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.ticket).toBe('ticket-x');
+    expect(res.body.data.token).toBe('lk-token');
   });
 });
