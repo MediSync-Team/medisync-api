@@ -84,7 +84,8 @@ app.options('*', cors(corsOptions));
 
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  // Dev (`npm run dev`) generates heavy polling while testing; keep prod strict.
+  max: isProduction ? 200 : 10000,
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => req.method === 'OPTIONS',

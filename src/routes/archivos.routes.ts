@@ -1,25 +1,18 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs/promises';
-import { v4 as uuidv4 } from 'uuid';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
-import { getFileTypeFromPath } from '../utils/file-type-validator';
+import { getFileTypeFromBuffer } from '../utils/file-type-validator';
+import { storeArchivo, deleteArchivoByUrl } from '../services/storage.service';
 
 const router = Router();
 
-const storage = multer.diskStorage({
-  destination: './uploads',
-  filename: (req, file, cb) => {
-    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
-  },
-});
-
+// Keep the upload in memory; storage.service decides where the bytes land
+// (Cloudinary when configured, local ./uploads otherwise).
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
@@ -72,55 +65,43 @@ router.post(
       throw new AppError(400, 'NO_FILE', 'No se subió ningún archivo');
     }
 
-    const filePath = path.join('./uploads', req.file.filename);
-
-    try {
-      // Validate actual file type using magic bytes, not client-provided MIME type
-      const fileType = await getFileTypeFromPath(filePath);
-
-      if (!fileType) {
-        await fs.unlink(filePath); // Delete unrecognized file
-        throw new AppError(400, 'INVALID_FILE_TYPE', 'No se pudo identificar el tipo de archivo');
-      }
-
-      // Check if detected MIME type is in allowed list
-      if (!ALLOWED_MIME_TYPES.has(fileType.mime)) {
-        await fs.unlink(filePath); // Delete disallowed file
-        throw new AppError(400, 'FILE_TYPE_NOT_ALLOWED', `Tipo de archivo no permitido: ${fileType.mime}`);
-      }
-
-      // Additional validation: check extension matches detected type
-      const ext = path.extname(req.file.originalname).toLowerCase();
-      const expectedMimes = EXPECTED_MIME_BY_EXT[ext];
-      if (ext && expectedMimes && !expectedMimes.includes(fileType.mime)) {
-        await fs.unlink(filePath); // Delete mismatched file
-        throw new AppError(400, 'FILE_EXTENSION_MISMATCH', 'La extensión del archivo no coincide con su contenido');
-      }
-
-      const { turnoId } = req.params;
-      const { tipo = 'OTRO' } = req.body;
-
-      const archivo = await prisma.archivo.create({
-        data: {
-          turnoId,
-          tipo: tipo.toUpperCase(),
-          url: `/uploads/${req.file.filename}`,
-          nombreOriginal: req.file.originalname,
-          tamanoBytes: req.file.size,
-          mimeType: fileType.mime, // Use detected MIME type, not client-provided
-        },
-      });
-
-      res.status(201).json(success(archivo));
-    } catch (err) {
-      // Ensure file is deleted if validation fails
-      try {
-        await fs.unlink(filePath);
-      } catch {
-        // File might already be deleted or not exist
-      }
-      throw err;
+    // Validate the real file type from the buffer's magic bytes (not the client MIME).
+    const fileType = await getFileTypeFromBuffer(req.file.buffer);
+    if (!fileType) {
+      throw new AppError(400, 'INVALID_FILE_TYPE', 'No se pudo identificar el tipo de archivo');
     }
+    if (!ALLOWED_MIME_TYPES.has(fileType.mime)) {
+      throw new AppError(400, 'FILE_TYPE_NOT_ALLOWED', `Tipo de archivo no permitido: ${fileType.mime}`);
+    }
+
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const expectedMimes = EXPECTED_MIME_BY_EXT[ext];
+    if (ext && expectedMimes && !expectedMimes.includes(fileType.mime)) {
+      throw new AppError(400, 'FILE_EXTENSION_MISMATCH', 'La extensión del archivo no coincide con su contenido');
+    }
+
+    const { turnoId } = req.params;
+    const { tipo = 'OTRO' } = req.body;
+
+    // Durable storage (Cloudinary) or local-disk fallback — the URL goes into Archivo.url.
+    const stored = await storeArchivo(req.file.buffer, {
+      turnoId,
+      ext: ext || `.${fileType.ext}`,
+      mime: fileType.mime,
+    });
+
+    const archivo = await prisma.archivo.create({
+      data: {
+        turnoId,
+        tipo: tipo.toUpperCase(),
+        url: stored.url,
+        nombreOriginal: req.file.originalname,
+        tamanoBytes: req.file.size,
+        mimeType: fileType.mime, // Use detected MIME type, not client-provided
+      },
+    });
+
+    res.status(201).json(success(archivo));
   })
 );
 
@@ -152,8 +133,7 @@ router.delete('/:id', authMiddleware(), asyncHandler(async (req: AuthRequest, re
   }
 
   await prisma.archivo.delete({ where: { id: req.params.id } });
-  const uploadPath = path.join(process.cwd(), archivo.url.replace(/^\//, ''));
-  await fs.unlink(uploadPath).catch(() => null);
+  await deleteArchivoByUrl(archivo.url); // Cloudinary or local, best-effort
 
   res.json(success({ deleted: true }));
 }));
