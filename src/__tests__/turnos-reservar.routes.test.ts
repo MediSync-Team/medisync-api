@@ -89,10 +89,6 @@ jest.mock('../services/preconsulta.service', () => ({
   analyzePreconsulta: jest.fn(async () => null),
 }));
 
-jest.mock('../services/video-room.service', () => ({
-  issueVideoTicket: jest.fn(async () => ({ token: 'video-token' })),
-}));
-
 jest.mock('../utils/auth-helpers', () => ({
   getProfesionalIdByUsuario: jest.fn(async () => 'prof-1'),
 }));

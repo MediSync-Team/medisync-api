@@ -10,7 +10,7 @@ const router = Router();
 router.use(authMiddleware());
 
 /** Verify requesting user is paciente or profesional of the turno */
-async function assertChatAccess(turnoId: string, req: AuthRequest) {
+async function assertChatAccess(turnoId: string, req: AuthRequest, opts: { forWrite?: boolean } = {}) {
   const turno = await prisma.turno.findUnique({
     where: { id: turnoId },
     include: {
@@ -29,12 +29,35 @@ async function assertChatAccess(turnoId: string, req: AuthRequest) {
     throw new AppError(403, 'FORBIDDEN', 'Sin permisos para acceder a este chat');
   }
 
-  if (turno.estado === 'CANCELADO') {
+  // Block *sending* on a cancelled turno, but still allow *reading* the history so
+  // participants can review what was said (e.g. an in-call chat from before the
+  // turno was cancelled for non-payment).
+  if (opts.forWrite && turno.estado === 'CANCELADO') {
     throw new AppError(400, 'TURNO_CANCELADO', 'No se puede chatear en un turno cancelado');
   }
 
   return { turno, isPaciente, isProfesional };
 }
+
+// GET /api/chat/unread-global — total unread across all the user's turnos.
+// Declared BEFORE '/:turnoId' so Express doesn't match "unread-global" as a turnoId.
+router.get('/unread-global', asyncHandler(async (req: AuthRequest, res) => {
+  const userId = req.user!.userId;
+  const count = await prisma.chatMensaje.count({
+    where: {
+      remitenteId: { not: userId },
+      leidoAt: null,
+      turno: {
+        estado: { not: 'CANCELADO' },
+        OR: [
+          { paciente: { usuarioId: userId } },
+          { profesional: { usuarioId: userId } },
+        ],
+      },
+    },
+  });
+  res.json(success({ count }));
+}));
 
 // GET /api/chat/:turnoId — list messages
 router.get('/:turnoId', asyncHandler(async (req: AuthRequest, res) => {
@@ -72,7 +95,7 @@ router.post(
 
     const { turnoId } = req.params;
     const { contenido } = req.body;
-    const { turno, isPaciente } = await assertChatAccess(turnoId, req);
+    const { turno, isPaciente } = await assertChatAccess(turnoId, req, { forWrite: true });
 
     const userId = req.user!.userId;
 
