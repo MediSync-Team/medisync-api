@@ -29,6 +29,7 @@ import { obrasSocialesRouter } from './routes/obras-sociales.routes';
 import { certificadosRouter } from './routes/certificados.routes';
 import { cuponesRouter } from './routes/cupones.routes';
 import { suscripcionesRouter } from './routes/suscripciones.routes';
+import { whatsappRouter } from './routes/whatsapp.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 import { expireStaleWaitlistNotifications } from './services/waitlist.service';
@@ -135,6 +136,7 @@ app.use('/api/chat', chatRouter);
 app.use('/api/google', googleRouter);
 app.use('/api/clinicas', clinicasRouter);
 app.use('/api/obras-sociales', obrasSocialesRouter);
+app.use('/api/whatsapp', whatsappRouter);
 
 app.use(errorHandler);
 

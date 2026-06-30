@@ -321,6 +321,7 @@ model Turno {
   linkVideollamada    String?     @map("link_videollamada")
   lugarAtencion       String?     @map("lugar_atencion")
   notasCancelacion    String?     @map("notas_cancelacion")
+  asistenciaConfirmadaAt DateTime? @map("asistencia_confirmada_at")
   googleEventId          String?     @map("google_event_id")
   googleEventIdPaciente  String?     @map("google_event_id_paciente")
   createdAt              DateTime    @default(now()) @map("created_at")
@@ -572,6 +573,21 @@ model RecordatorioEnviado {
   @@unique([turnoId, tipo])
   @@index([enviadoAt])
   @@map("recordatorio_enviado")
+}
+
+model WhatsappSession {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  pacienteId String? @map("paciente_id")
+  turnoId   String? @map("turno_id")
+  estado    String
+  data      Json?
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([expiresAt])
+  @@map("whatsapp_session")
 }
 
 model CertificadoMedico {
