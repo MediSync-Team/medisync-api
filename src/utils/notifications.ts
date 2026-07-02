@@ -7,6 +7,7 @@ export type NotificationEvent =
   | 'TURNO_CONFIRMADO'
   | 'TURNO_CANCELADO'
   | 'TURNO_REPROGRAMADO'
+  | 'RECORDATORIO_48H'
   | 'RECORDATORIO_24H'
   | 'RECORDATORIO_2H'
   | 'RECETA_EMITIDA'
@@ -119,6 +120,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     TURNO_CONFIRMADO: '✅',
     TURNO_CANCELADO: '❌',
     TURNO_REPROGRAMADO: '🔄',
+    RECORDATORIO_48H: '⏰',
     RECORDATORIO_24H: '⏰',
     RECORDATORIO_2H: '🔔',
     RECETA_EMITIDA: '📋',
@@ -137,6 +139,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     TURNO_CONFIRMADO: EMAIL_SUCCESS_COLOR,
     TURNO_CANCELADO: EMAIL_DANGER_COLOR,
     TURNO_REPROGRAMADO: EMAIL_WARNING_COLOR,
+    RECORDATORIO_48H: EMAIL_WARNING_COLOR,
     RECORDATORIO_24H: EMAIL_WARNING_COLOR,
     RECORDATORIO_2H: EMAIL_DANGER_COLOR,
     RECETA_EMITIDA: EMAIL_SUCCESS_COLOR,
@@ -258,15 +261,53 @@ async function sendEmailResend(payload: NotificationPayload) {
 function normalizeWhatsappPhone(phone: string): string {
   const clean = phone.replace(/[\s\-()]/g, '');
   if (clean.startsWith('00')) return `whatsapp:+${clean.slice(2)}`;
-  if (clean.startsWith('+')) return `whatsapp:${clean}`;
+  if (clean.startsWith('+')) {
+    // Argentine mobiles need 9 after country code for WhatsApp
+    if (clean.startsWith('+54') && clean.length >= 12 && !clean.startsWith('+549')) {
+      return `whatsapp:+549${clean.slice(3)}`;
+    }
+    return `whatsapp:${clean}`;
+  }
   if (clean.startsWith('549')) return `whatsapp:+${clean}`;
-  if (clean.startsWith('54')) return `whatsapp:+${clean}`;
+  if (clean.startsWith('54') && clean.length >= 11) {
+    if (!clean.startsWith('549')) {
+      return `whatsapp:+549${clean.slice(2)}`;
+    }
+    return `whatsapp:+${clean}`;
+  }
   if (clean.startsWith('0')) return `whatsapp:+54${clean.slice(1)}`;
   return `whatsapp:+${clean}`;
 }
 
 function buildWhatsappText(payload: NotificationPayload): string {
   const { title, message, meta = {} } = payload;
+
+  if (payload.event === 'RECORDATORIO_48H') {
+    const profesional = typeof meta.profesional === 'string' ? meta.profesional : 'tu profesional';
+    let fecha = typeof meta.fechaTexto === 'string' ? meta.fechaTexto : '';
+
+    if (!fecha && typeof meta.fechaHora === 'string') {
+      const d = new Date(meta.fechaHora);
+      fecha = d.toLocaleString('es-AR', {
+        timeZone: CLINIC_TIME_ZONE,
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    return [
+      `Hola, te recordamos tu turno con ${profesional} el ${fecha}.`,
+      'Respondé:',
+      '1 Confirmar asistencia',
+      '2 Reprogramar',
+      '3 Cancelar',
+      '4 Ver próximos turnos',
+    ].join('\n');
+  }
+
   const lines = [`*${title}*`, '', message];
 
   if (meta.fechaHora && typeof meta.fechaHora === 'string') {
