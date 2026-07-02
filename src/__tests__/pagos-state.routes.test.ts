@@ -19,6 +19,9 @@ const mockPrisma = {
     update: jest.fn() as any,
     updateMany: jest.fn() as any,
   },
+  usuario: {
+    findUnique: jest.fn() as any,
+  },
   $transaction: jest.fn() as any,
 };
 
@@ -70,6 +73,7 @@ function mockTurno(estado: string, precioConsulta = 420) {
     paciente: { usuarioId: pacienteUsuarioId, email: 'paciente@test.com' },
     profesional: {
       id: 'prof-1',
+      usuarioId: 'prof-usuario-1',
       nombre: 'Pedro',
       apellido: 'Franchetti',
       precioConsulta,
@@ -93,6 +97,8 @@ describe('payment routes appointment state consistency', () => {
     mockPrisma.cupon.findUnique.mockResolvedValue({ id: 'cupon-1', maxUsos: null, usosActuales: 0 });
     mockPrisma.cupon.update.mockResolvedValue({ id: 'cupon-1' });
     mockPrisma.cupon.updateMany.mockResolvedValue({ count: 1 });
+    // Professional has no linked MP account → payment falls back to the platform token.
+    mockPrisma.usuario.findUnique.mockResolvedValue({ mpAccessToken: null, mpVendedorId: null });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
     (global as any).fetch = jest.fn(async () => ({
       ok: true,
@@ -275,6 +281,7 @@ describe('payment routes appointment state consistency', () => {
       paciente: { usuarioId: pacienteUsuarioId, email: 'paciente@test.com' },
       profesional: {
         id: 'prof-1',
+        usuarioId: 'prof-usuario-1',
         nombre: 'Pedro',
         apellido: 'Franchetti',
         precioConsulta: 420,

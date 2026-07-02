@@ -402,6 +402,8 @@ model Pago {
   mpPreferenciaId     String?     @map("mp_preferencia_id")
   mpPaymentId         String?     @map("mp_payment_id")
   mpStatus            String?     @map("mp_status")
+  mpRefundId          String?     @map("mp_refund_id")
+  reembolsadoAt       DateTime?   @map("reembolsado_at")
   cuponId             String?     @map("cupon_id")
   montoDescuento      Decimal?    @map("monto_descuento") @db.Decimal(10, 2)
   createdAt           DateTime    @default(now()) @map("created_at")

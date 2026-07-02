@@ -2,6 +2,7 @@ import { EstadoTurno } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
 import { notifyWaitlistForReleasedSlot } from '../waitlist.service';
+import { refundPagoForTurno } from '../pagos/refund.service';
 import { formatClinicDateTimeEs } from '../../utils/clinic-time';
 import { canTransitionTurnoState } from '../../utils/turno-state';
 import {
@@ -126,6 +127,18 @@ export async function cambiarEstadoTurno(input: CambiarEstadoInput): Promise<Cam
   };
 
   if (estado === 'CANCELADO' && cancellationSideEffectsEnabled) {
+    // Reembolso automático del pago aprobado (total). Best-effort: si MP falla,
+    // la cancelación igual sale y el reembolso se reintenta vía
+    // POST /pagos/:turnoId/reembolsar o se reconcilia por webhook.
+    try {
+      const refund = await refundPagoForTurno(turnoId, { motivo: notasCancelacion });
+      if (refund === 'failed') {
+        console.error('[turnos] Cancelación sin reembolso: reintentar manualmente', { turnoId });
+      }
+    } catch (err) {
+      console.error('[turnos] Error inesperado reembolsando al cancelar', { turnoId, err });
+    }
+
     // Notificar al paciente
     if (turnoActualizado.paciente) {
       await notifyTurnoUser(

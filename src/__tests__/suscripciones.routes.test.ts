@@ -127,3 +127,83 @@ describe('GET /suscripciones/estado', () => {
     expect(res.body.data.turnosRestantes).toBe(0);
   });
 });
+
+describe('POST /suscripciones/cancelar — PRO corre hasta planVenceAt', () => {
+  const app = makeApp();
+  const planVenceAt = new Date('2026-07-25T00:00:00.000Z');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (getProfesionalIdByUsuario as jest.MockedFunction<typeof getProfesionalIdByUsuario>).mockResolvedValue(profesionalId);
+    mockPrisma.profesional.findUnique.mockResolvedValue({
+      mpSuscripcionId: 'preapproval-1',
+      planVenceAt,
+    });
+    mockPrisma.profesional.update.mockResolvedValue({});
+    (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({}) }));
+  });
+
+  it('keeps plan and planVenceAt, clears only mpSuscripcionId, and returns planVenceAt', async () => {
+    const res = await request(app)
+      .post('/suscripciones/cancelar')
+      .set('Authorization', `Bearer ${profesionalToken()}`)
+      .timeout({ deadline: 1000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      cancelled: true,
+      planVenceAt: planVenceAt.toISOString(),
+    });
+    expect(mockPrisma.profesional.update).toHaveBeenCalledWith({
+      where: { id: profesionalId },
+      data: { mpSuscripcionId: null },
+    });
+  });
+});
+
+describe('POST /suscripciones/webhook — semántica de bajas', () => {
+  const app = makeApp();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPrisma.profesional.findFirst.mockResolvedValue({ id: profesionalId });
+    mockPrisma.profesional.update.mockResolvedValue({});
+  });
+
+  async function postWebhook(status: string) {
+    return request(app)
+      .post('/suscripciones/webhook')
+      .send({ type: 'subscription_preapproval', data: { id: 'preapproval-1', status } })
+      .timeout({ deadline: 1000 });
+  }
+
+  it('authorized upgrades to PRO and extends planVenceAt', async () => {
+    const res = await postWebhook('authorized');
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.profesional.update).toHaveBeenCalledWith({
+      where: { id: profesionalId },
+      data: expect.objectContaining({ plan: 'PRO', planVenceAt: expect.any(Date) }),
+    });
+  });
+
+  it('cancelled keeps the plan running and only unlinks the preapproval', async () => {
+    const res = await postWebhook('cancelled');
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.profesional.update).toHaveBeenCalledWith({
+      where: { id: profesionalId },
+      data: { mpSuscripcionId: null },
+    });
+  });
+
+  it('paused changes nothing (the expiry cron downgrades when planVenceAt lapses)', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await postWebhook('paused');
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.profesional.update).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});

@@ -511,3 +511,110 @@ describe('POST /pagos/webhook payment approval state guards', () => {
     expect((global as any).fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /pagos/webhook refund reconciliation', () => {
+  const app = makeApp();
+  let errorSpy: jest.SpiedFunction<typeof console.error>;
+
+  function mockRefundedPayment(status: 'refunded' | 'cancelled' = 'refunded') {
+    (global as any).fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        external_reference: turnoId,
+        status,
+        transaction_amount: 420,
+      }),
+    }));
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.MP_WEBHOOK_SECRET;
+    mockRefundedPayment();
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+    mockPrisma.pago.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: null, estado: 'REEMBOLSADO' });
+    mockPrisma.cupon.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('CONFIRMADO'));
+    mockPrisma.turno.update.mockResolvedValue({ ...makeTurno('CANCELADO'), notasCancelacion: 'Pago reembolsado en Mercado Pago.' });
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  it('marks the pago REEMBOLSADO, cancels a CONFIRMADO turno, and notifies the patient', async () => {
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalledWith({
+      where: { turnoId, mpPaymentId: paymentId, estado: { not: 'REEMBOLSADO' } },
+      data: expect.objectContaining({
+        estado: 'REEMBOLSADO',
+        mpStatus: 'refunded',
+        reembolsadoAt: expect.any(Date),
+      }),
+    });
+    expect(mockPrisma.turno.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: turnoId },
+      data: { estado: 'CANCELADO', notasCancelacion: 'Pago reembolsado en Mercado Pago.' },
+    }));
+    expect(mockSendNotification).toHaveBeenCalledWith(
+      ['EMAIL', 'WHATSAPP'],
+      expect.objectContaining({
+        event: 'PAGO_REEMBOLSADO',
+        title: 'Pago reembolsado — Turno cancelado',
+      }),
+    );
+  });
+
+  it('no-ops on a duplicate delivery (pago already REEMBOLSADO)', async () => {
+    mockPrisma.pago.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+    expect(mockPrisma.cupon.updateMany).not.toHaveBeenCalled();
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it('reverts the coupon use when the refunded pago had a coupon', async () => {
+    mockPrisma.pago.findUnique.mockResolvedValue({ id: 'pago-1', cuponId: 'cupon-1', estado: 'REEMBOLSADO' });
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.cupon.updateMany).toHaveBeenCalledWith({
+      where: { id: 'cupon-1', usosActuales: { gt: 0 } },
+      data: { usosActuales: { decrement: 1 } },
+    });
+  });
+
+  it('does not touch an already CANCELADO turno but still marks the pago and notifies', async () => {
+    mockPrisma.turno.findUnique.mockResolvedValue(makeTurno('CANCELADO'));
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalled();
+    expect(mockPrisma.turno.update).not.toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalledWith(
+      ['EMAIL', 'WHATSAPP'],
+      expect.objectContaining({ title: 'Pago reembolsado' }),
+    );
+  });
+
+  it('handles the cancelled status the same as refunded', async () => {
+    mockRefundedPayment('cancelled');
+
+    const res = await postApprovedWebhook(app);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.pago.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ estado: 'REEMBOLSADO', mpStatus: 'cancelled' }),
+    }));
+  });
+});

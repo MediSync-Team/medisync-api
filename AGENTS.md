@@ -33,6 +33,7 @@ Node.js + Express + TypeScript, Prisma ORM, PostgreSQL, JWT + bcrypt. Jest + Sup
 - Reminders: every 30 min
 - Waitlist expiry: every 30 min
 - Stale reservation cleanup: every 15 min
+- PRO plan expiry (downgrade to FREE past `planVenceAt`): hourly
 
 ## Rate limiting
 - General: 200 requests / 15 min
@@ -50,6 +51,7 @@ Node.js + Express + TypeScript, Prisma ORM, PostgreSQL, JWT + bcrypt. Jest + Sup
 - `FRONTEND_URL`, `FRONTEND_URLS`, `BACKEND_URL` (**`BACKEND_URL` required in production** — the MercadoPago webhook URL is built from it; no Host-header fallback in prod)
 - `CLOUDINARY_URL`
 - `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`
+- `MP_CLIENT_ID`, `MP_CLIENT_SECRET`, `MP_OAUTH_REDIRECT_URI`, `MP_MARKETPLACE_FEE_PERCENT` (MercadoPago per-professional account linking / OAuth marketplace; seller tokens stored encrypted via `TOKEN_ENCRYPTION_KEY`)
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`

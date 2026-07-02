@@ -29,10 +29,12 @@ import { obrasSocialesRouter } from './routes/obras-sociales.routes';
 import { certificadosRouter } from './routes/certificados.routes';
 import { cuponesRouter } from './routes/cupones.routes';
 import { suscripcionesRouter } from './routes/suscripciones.routes';
+import { mercadopagoRouter } from './routes/mercadopago.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { sendUpcomingAppointmentsReminders } from './services/reminder.service';
 import { expireStaleWaitlistNotifications } from './services/waitlist.service';
 import { cleanupStaleReservations } from './services/appointment-cleanup.service';
+import { downgradeExpiredProPlans } from './services/subscription-expiry.service';
 import { createCorsOriginRules, isOriginAllowed } from './config/cors';
 import prisma from './lib/prisma';
 
@@ -133,6 +135,7 @@ app.use('/api/suscripciones', suscripcionesRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/google', googleRouter);
+app.use('/api/mercadopago', mercadopagoRouter);
 app.use('/api/clinicas', clinicasRouter);
 app.use('/api/obras-sociales', obrasSocialesRouter);
 
@@ -172,6 +175,14 @@ const cleanupJob = cron.schedule('*/15 * * * *', async () => {
   }
 });
 
+const planExpiryJob = cron.schedule('0 * * * *', async () => {
+  try {
+    await downgradeExpiredProPlans();
+  } catch (err) {
+    console.error('[suscripciones] plan expiry job error:', err);
+  }
+});
+
 let shuttingDown = false;
 
 function gracefulShutdown(signal: string) {
@@ -183,6 +194,7 @@ function gracefulShutdown(signal: string) {
   reminderJob.stop();
   waitlistJob.stop();
   cleanupJob.stop();
+  planExpiryJob.stop();
   httpServer.close(() => {
     prisma.$disconnect().then(() => {
       console.log('[shutdown] Prisma disconnected, exiting.');
