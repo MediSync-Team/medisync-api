@@ -67,6 +67,7 @@ enum TipoArchivo {
   LABORATORIO
   IMAGEN
   OTRO
+  CHAT
 }
 
 enum TipoDescuento {
@@ -321,7 +322,7 @@ model Turno {
   linkVideollamada    String?     @map("link_videollamada")
   lugarAtencion       String?     @map("lugar_atencion")
   notasCancelacion    String?     @map("notas_cancelacion")
-  asistenciaConfirmadaAt DateTime? @map("asistencia_confirmada_at")
+  asistenciaConfirmadaAt DateTime? @map("asistencia_confirmada_at") @db.Timestamptz(6)
   googleEventId          String?     @map("google_event_id")
   googleEventIdPaciente  String?     @map("google_event_id_paciente")
   createdAt              DateTime    @default(now()) @map("created_at")
@@ -385,11 +386,14 @@ model Archivo {
   nombreOriginal  String      @map("nombre_original")
   tamanoBytes     Int         @map("tamano_bytes")
   mimeType        String      @map("mime_type")
+  chatMensajeId   String?     @map("chat_mensaje_id")
   createdAt       DateTime    @default(now()) @map("created_at")
 
-  turno Turno @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  turno       Turno        @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  chatMensaje ChatMensaje? @relation(fields: [chatMensajeId], references: [id], onDelete: Cascade)
 
   @@index([turnoId])
+  @@index([chatMensajeId])
   @@map("archivo")
 }
 
@@ -560,6 +564,7 @@ model ChatMensaje {
   createdAt    DateTime  @default(now()) @map("created_at")
 
   turno        Turno     @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  archivos     Archivo[]
 
   @@index([turnoId, createdAt])
   @@index([remitenteId])
@@ -584,9 +589,9 @@ model WhatsappSession {
   turnoId   String? @map("turno_id")
   estado    String
   data      Json?
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([expiresAt])
   @@map("whatsapp_session")
