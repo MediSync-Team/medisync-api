@@ -1,12 +1,12 @@
-import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
 import { sendNotification } from '../../utils/notifications';
-import { redeemCouponUse, revertCouponUse } from '../../utils/coupon-redemption';
+import { revertCouponUse } from '../../utils/coupon-redemption';
 import { isPayableTurnoState } from '../../utils/turno-state';
 import { formatClinicDateTimeEs } from '../../utils/clinic-time';
 import { fetchMpPayment, isValidWebhookSignature, MercadoPagoWebhookBody } from './mercadopago';
 import { resolveWebhookCredentials, callMpWithRefresh } from './mp-credentials';
+import { approvePagoForTurno } from './payment-approval.service';
 
 export interface ProcessPaymentWebhookInput {
   body: MercadoPagoWebhookBody;
@@ -42,101 +42,12 @@ export async function processPaymentWebhook({ body, signature, requestId, turnoI
     const turnoId = payment.external_reference;
 
     if (turnoId && payment.status === 'approved') {
-      let couponRedemptionWarning: {
-        turnoId: string;
-        pagoId: string;
-        cuponId: string;
-        mpPaymentId: string;
-        redemption: 'exhausted' | 'missing';
-      } | null = null;
-
-      // Pago approval, coupon usage, and turno confirmation must commit together.
-      const approved = await prisma.$transaction(async (tx) => {
-        const turnoActual = await tx.turno.findUnique({
-          where: { id: turnoId },
-          include: {
-            pago: true,
-            paciente: true,
-            profesional: true,
-          },
-        });
-
-        if (!turnoActual || !isPayableTurnoState(turnoActual.estado)) {
-          return {
-            skipped: true as const,
-            turnoEstado: turnoActual?.estado ?? 'MISSING',
-          };
-        }
-
-        if (turnoActual.pago?.estado === 'APROBADO') {
-          return { skipped: true as const, turnoEstado: turnoActual.estado };
-        }
-
-        const paymentData = {
-          estado: 'APROBADO' as const,
-          mpPaymentId: String(paymentId),
-          mpStatus: payment.status,
-        };
-        const amount = Number(payment.transaction_amount || 0);
-        let pago = turnoActual.pago;
-
-        if (pago) {
-          const updated = await tx.pago.updateMany({
-            where: {
-              turnoId,
-              estado: { not: 'APROBADO' },
-            },
-            data: paymentData,
-          });
-
-          if (updated.count === 0) {
-            return { skipped: true as const, turnoEstado: turnoActual.estado };
-          }
-
-          pago = await tx.pago.findUnique({ where: { turnoId } });
-        } else {
-          try {
-            pago = await tx.pago.create({
-              data: {
-                turnoId,
-                monto: amount,
-                montoNeto: amount,
-                ...paymentData,
-              },
-            });
-          } catch (err) {
-            if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-              return { skipped: true as const, turnoEstado: turnoActual.estado };
-            }
-            throw err;
-          }
-        }
-
-        if (!pago) {
-          return { skipped: true as const, turnoEstado: turnoActual.estado };
-        }
-
-        // Keep coupon usage tied to the one webhook that newly approves the payment.
-        if (pago.cuponId) {
-          const redemption = await redeemCouponUse(tx, pago.cuponId);
-          if (redemption !== 'incremented') {
-            couponRedemptionWarning = {
-              turnoId,
-              pagoId: pago.id,
-              cuponId: pago.cuponId,
-              mpPaymentId: String(paymentId),
-              redemption,
-            };
-          }
-        }
-
-        const turno = await tx.turno.update({
-          where: { id: turnoId },
-          data: { estado: 'CONFIRMADO' },
-          include: { paciente: true, profesional: true },
-        });
-
-        return { skipped: false as const, pago, turno };
+      // Pago approval, coupon usage, and turno confirmation commit together, in
+      // the same idempotent transition used by the /pago-exitoso reconciliation.
+      const approved = await approvePagoForTurno(turnoId, {
+        paymentId,
+        status: payment.status,
+        amount: Number(payment.transaction_amount || 0),
       });
 
       if (approved.skipped) {
@@ -150,10 +61,10 @@ export async function processPaymentWebhook({ body, signature, requestId, turnoI
         return;
       }
 
-      const { pago, turno } = approved;
+      const { pago, turno, couponWarning } = approved;
 
-      if (couponRedemptionWarning) {
-        console.warn('[pagos] Coupon capacity exhausted after paid approval', couponRedemptionWarning);
+      if (couponWarning) {
+        console.warn('[pagos] Coupon capacity exhausted after paid approval', couponWarning);
       }
 
       try {

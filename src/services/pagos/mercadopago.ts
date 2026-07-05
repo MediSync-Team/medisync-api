@@ -30,6 +30,7 @@ export interface MercadoPagoWebhookBody {
 }
 
 export interface MercadoPagoPaymentResponse {
+  id?: number | string;
   external_reference?: string;
   status?: string;
   transaction_amount?: number;
@@ -122,6 +123,34 @@ export async function refundMpPayment(
   }
 
   return await response.json() as MercadoPagoRefundResponse;
+}
+
+export interface MercadoPagoSearchResponse {
+  results?: MercadoPagoPaymentResponse[];
+}
+
+/**
+ * Search a seller's payments by `external_reference` (= turnoId), newest first.
+ * Used by the `/pago-exitoso` reconciliation to find an approved payment when the
+ * webhook has not arrived yet. `accessToken` must own the payments (the seller's
+ * token for split payments). Throws {@link MpApiError} on a non-OK response.
+ */
+export async function searchMpPaymentsByExternalReference(
+  externalReference: string,
+  accessToken: string = process.env.MP_ACCESS_TOKEN || '',
+): Promise<MercadoPagoSearchResponse> {
+  const url = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&external_reference=${encodeURIComponent(externalReference)}`;
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new MpApiError(response.status, `Mercado Pago payment search failed with status ${response.status}`);
+  }
+
+  return await response.json() as MercadoPagoSearchResponse;
 }
 
 function parseSignatureHeader(signature: string) {
