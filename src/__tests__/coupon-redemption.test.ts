@@ -1,5 +1,5 @@
 import { describe, expect, it, jest, beforeEach } from '@jest/globals';
-import { redeemCouponUse } from '../utils/coupon-redemption';
+import { redeemCouponUse, revertCouponUse } from '../utils/coupon-redemption';
 
 const tx = {
   cupon: {
@@ -73,5 +73,41 @@ describe('redeemCouponUse', () => {
     expect(result).toBe('exhausted');
     expect(tx.cupon.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.cupon.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('revertCouponUse', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('decrements a redeemed use', async () => {
+    tx.cupon.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await revertCouponUse(tx as any, 'cupon-1');
+
+    expect(result).toBe('decremented');
+    expect(tx.cupon.updateMany).toHaveBeenCalledWith({
+      where: { id: 'cupon-1', usosActuales: { gt: 0 } },
+      data: { usosActuales: { decrement: 1 } },
+    });
+  });
+
+  it('floors at zero instead of going negative', async () => {
+    tx.cupon.updateMany.mockResolvedValue({ count: 0 });
+    tx.cupon.findUnique.mockResolvedValue({ id: 'cupon-1' });
+
+    const result = await revertCouponUse(tx as any, 'cupon-1');
+
+    expect(result).toBe('floor');
+  });
+
+  it('returns missing for deleted coupons', async () => {
+    tx.cupon.updateMany.mockResolvedValue({ count: 0 });
+    tx.cupon.findUnique.mockResolvedValue(null);
+
+    const result = await revertCouponUse(tx as any, 'cupon-1');
+
+    expect(result).toBe('missing');
   });
 });

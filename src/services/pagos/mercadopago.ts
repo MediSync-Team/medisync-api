@@ -1,5 +1,19 @@
 import crypto from 'crypto';
-import { AppError } from '../../utils/response';
+
+/**
+ * Error thrown by the low-level MercadoPago REST calls, carrying the HTTP status
+ * so callers can react to it — e.g. refresh an expired seller token on 401 (see
+ * `mp-credentials.ts`). Higher layers (payment/webhook services) catch this and
+ * remap it to their own `AppError`.
+ */
+export class MpApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'MpApiError';
+    this.status = status;
+  }
+}
 
 export interface MercadoPagoPreferenceResponse {
   id: string;
@@ -16,22 +30,28 @@ export interface MercadoPagoWebhookBody {
 }
 
 export interface MercadoPagoPaymentResponse {
+  id?: number | string;
   external_reference?: string;
   status?: string;
   transaction_amount?: number;
 }
 
 /**
- * Create a MercadoPago checkout preference. Throws `AppError(400, 'MP_ERROR')`
- * when MP responds with an error — note callers wrap this in their own try/catch
+ * Create a MercadoPago checkout preference. `accessToken` selects the receiving
+ * account — pass the professional's linked token for split payments, or omit it
+ * to fall back to the platform token. Throws {@link MpApiError} (carrying the HTTP
+ * status) when MP responds with an error; callers wrap this in their own try/catch
  * (see `payment.service.ts`), so the surfaced status is ultimately theirs.
  */
-export async function createMpPreference(preferenceData: Record<string, unknown>): Promise<MercadoPagoPreferenceResponse> {
+export async function createMpPreference(
+  preferenceData: Record<string, unknown>,
+  accessToken: string = process.env.MP_ACCESS_TOKEN || '',
+): Promise<MercadoPagoPreferenceResponse> {
   const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${accessToken}`,
     },
     body: JSON.stringify(preferenceData),
   });
@@ -41,25 +61,96 @@ export async function createMpPreference(preferenceData: Record<string, unknown>
   if (!response.ok || data.error) {
     const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
     console.error('MP Error:', errorMsg);
-    throw new AppError(400, 'MP_ERROR', errorMsg);
+    throw new MpApiError(response.ok ? 400 : response.status, errorMsg);
   }
 
   return data;
 }
 
-/** Fetch a MercadoPago payment by id. Throws a plain Error on a non-OK response. */
-export async function fetchMpPayment(paymentId: string | number): Promise<MercadoPagoPaymentResponse> {
+/**
+ * Fetch a MercadoPago payment by id. `accessToken` must be the token of the
+ * account that owns the payment (the seller's, for split payments; the platform's
+ * otherwise). Throws {@link MpApiError} on a non-OK response.
+ */
+export async function fetchMpPayment(
+  paymentId: string | number,
+  accessToken: string = process.env.MP_ACCESS_TOKEN || '',
+): Promise<MercadoPagoPaymentResponse> {
   const response = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
     headers: {
-      'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${accessToken}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error(`Mercado Pago payment fetch failed with status ${response.status}`);
+    throw new MpApiError(response.status, `Mercado Pago payment fetch failed with status ${response.status}`);
   }
 
   return await response.json() as MercadoPagoPaymentResponse;
+}
+
+export interface MercadoPagoRefundResponse {
+  id: string | number;
+  status?: string;
+}
+
+/**
+ * Refund a MercadoPago payment in full (empty body = total refund; partial
+ * refunds are out of scope for v1). `accessToken` must be the token of the
+ * account that collected the payment (the seller's, for split payments) — MP
+ * rejects refunds issued with any other account. On a full refund MP also
+ * returns the `marketplace_fee` to the payer. `idempotencyKey` guards against
+ * double-submission via the `X-Idempotency-Key` header. Throws {@link MpApiError}
+ * on a non-OK response so `callMpWithRefresh` can retry an expired seller token.
+ */
+export async function refundMpPayment(
+  paymentId: string | number,
+  accessToken: string = process.env.MP_ACCESS_TOKEN || '',
+  idempotencyKey?: string,
+): Promise<MercadoPagoRefundResponse> {
+  const response = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}/refunds`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+      ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    throw new MpApiError(response.status, `Mercado Pago refund failed with status ${response.status}`);
+  }
+
+  return await response.json() as MercadoPagoRefundResponse;
+}
+
+export interface MercadoPagoSearchResponse {
+  results?: MercadoPagoPaymentResponse[];
+}
+
+/**
+ * Search a seller's payments by `external_reference` (= turnoId), newest first.
+ * Used by the `/pago-exitoso` reconciliation to find an approved payment when the
+ * webhook has not arrived yet. `accessToken` must own the payments (the seller's
+ * token for split payments). Throws {@link MpApiError} on a non-OK response.
+ */
+export async function searchMpPaymentsByExternalReference(
+  externalReference: string,
+  accessToken: string = process.env.MP_ACCESS_TOKEN || '',
+): Promise<MercadoPagoSearchResponse> {
+  const url = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&external_reference=${encodeURIComponent(externalReference)}`;
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new MpApiError(response.status, `Mercado Pago payment search failed with status ${response.status}`);
+  }
+
+  return await response.json() as MercadoPagoSearchResponse;
 }
 
 function parseSignatureHeader(signature: string) {

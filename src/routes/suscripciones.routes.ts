@@ -125,7 +125,7 @@ router.post(
 
     const profesional = await prisma.profesional.findUnique({
       where: { id: profesionalId },
-      select: { mpSuscripcionId: true },
+      select: { mpSuscripcionId: true, planVenceAt: true },
     });
 
     if (!profesional || !profesional.mpSuscripcionId) {
@@ -149,17 +149,17 @@ router.post(
         throw new AppError(400, 'MP_ERROR', 'Error al cancelar en MercadoPago');
       }
 
-      // Update profesional
+      // La cancelación corta el cobro recurrente pero el PRO ya pagado corre
+      // hasta planVenceAt; el cron de vencimiento lo baja a FREE al expirar.
       await prisma.profesional.update({
         where: { id: profesionalId },
-        data: {
-          plan: 'FREE',
-          mpSuscripcionId: null,
-          planVenceAt: null,
-        },
+        data: { mpSuscripcionId: null },
       });
 
-      res.json(success({ cancelled: true }));
+      res.json(success({
+        cancelled: true,
+        planVenceAt: profesional.planVenceAt ? profesional.planVenceAt.toISOString() : null,
+      }));
     } catch (err) {
       console.error('Error cancelando suscripción:', err);
       throw new AppError(500, 'MP_ERROR', 'Error al cancelar suscripción');
@@ -204,14 +204,17 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             planVenceAt: nextBilling,
           },
         });
-      } else if (status === 'cancelled' || status === 'paused') {
+      } else if (status === 'cancelled') {
+        // El PRO ya pagado corre hasta planVenceAt; el cron de vencimiento
+        // baja a FREE al expirar. Solo se desvincula la preapproval.
         await prisma.profesional.update({
           where: { id: profesional.id },
-          data: {
-            plan: 'FREE',
-            planVenceAt: null,
-          },
+          data: { mpSuscripcionId: null },
         });
+      } else if (status === 'paused') {
+        // Pago fallido/pausa: sin cambio de estado. Al no llegar 'authorized',
+        // planVenceAt no se extiende y el cron baja el plan cuando venza.
+        console.warn('[suscripciones] Preapproval pausada', { mpSuscripcionId, profesionalId: profesional.id });
       }
     } catch (err) {
       console.error('Error procesando webhook suscripción:', err);

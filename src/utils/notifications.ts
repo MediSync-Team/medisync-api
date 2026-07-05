@@ -17,7 +17,8 @@ export type NotificationEvent =
   | 'INVITACION_CLINICA'
   | 'BOOKING_CONFIRMATION'
   | 'BOOKING_CONFIRMED'
-  | 'RECUPERAR_CONTRASENA';
+  | 'RECUPERAR_CONTRASENA'
+  | 'PAGO_REEMBOLSADO';
 
 export interface NotificationPayload {
   event: NotificationEvent;
@@ -130,6 +131,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     BOOKING_CONFIRMATION: '📧',
     BOOKING_CONFIRMED: '✅',
     RECUPERAR_CONTRASENA: '🔐',
+    PAGO_REEMBOLSADO: '💸',
   };
 
   const accentMap: Record<NotificationEvent, string> = {
@@ -148,6 +150,7 @@ function buildEmailHtml(payload: NotificationPayload): string {
     BOOKING_CONFIRMATION: EMAIL_BRAND_COLOR,
     BOOKING_CONFIRMED: EMAIL_SUCCESS_COLOR,
     RECUPERAR_CONTRASENA: EMAIL_WARNING_COLOR,
+    PAGO_REEMBOLSADO: EMAIL_SUCCESS_COLOR,
   };
 
   const icon = iconMap[event] ?? '📬';

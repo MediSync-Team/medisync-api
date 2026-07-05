@@ -5,6 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
 import { sendNotification, resolveChannels } from '../utils/notifications';
 import { createNotification } from '../services/notification.service';
 import { findProfesionalByUserId } from '../utils/auth-helpers';
+import { refundPagoForTurno } from '../services/pagos/refund.service';
 import { DEFAULT_APPOINTMENT_DURATION_MIN, hasBlockConflict } from '../utils/appointment-conflicts';
 import {
   clinicDateTimeToUtcDate,
@@ -165,6 +166,12 @@ router.post('/', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthReq
   });
 
   for (const turno of result.turnosAfectados) {
+    // Reembolso automático de los turnos pagados que el bloqueo canceló.
+    // Best-effort post-commit: un fallo se reintenta vía POST /pagos/:turnoId/reembolsar.
+    refundPagoForTurno(turno.id, { motivo: 'Bloqueo de agenda del profesional' }).catch((err) => {
+      console.error('[bloqueos] Error reembolsando turno cancelado por bloqueo', { turnoId: turno.id, err });
+    });
+
     if (!turno.paciente) continue;
     const channels = resolveChannels({
       notifEmail: turno.paciente.notifEmail,

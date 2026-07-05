@@ -4,6 +4,7 @@ import { validateAndApplyCoupon } from '../../utils/coupon';
 import { redeemCouponUse } from '../../utils/coupon-redemption';
 import { isPayableTurnoState } from '../../utils/turno-state';
 import { createMpPreference } from './mercadopago';
+import { resolveSellerCredentials, callMpWithRefresh } from './mp-credentials';
 
 export interface CreatePaymentPreferenceInput {
   userId: string;
@@ -88,6 +89,19 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
     return { kind: 'free_confirmed' };
   }
 
+  // Resolve which MercadoPago account receives the money: the professional's own
+  // linked account (split payment) or the platform token as a fallback when they
+  // haven't linked yet. `marketplace_fee` (platform commission) is 0 by default
+  // and only applies to a real seller split.
+  const sellerCreds = await resolveSellerCredentials(turno.profesional.usuarioId);
+  const feePercent = sellerCreds.isSeller ? (Number(process.env.MP_MARKETPLACE_FEE_PERCENT) || 0) : 0;
+  const marketplaceFee = feePercent > 0 ? Math.round(precioFinal * feePercent) / 100 : 0;
+
+  // The webhook can't tell which seller's token to use from the payment id alone,
+  // so it reads the turnoId carried here on the notification_url.
+  const webhookSep = notificationUrl.includes('?') ? '&' : '?';
+  const notificationUrlWithTurno = `${notificationUrl}${webhookSep}turnoId=${encodeURIComponent(turnoId)}`;
+
   const preferenceData: Record<string, unknown> = {
     items: [
       {
@@ -98,7 +112,7 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
       },
     ],
     external_reference: turnoId,
-    notification_url: notificationUrl,
+    notification_url: notificationUrlWithTurno,
     payer: {
       email: turno.paciente?.email || 'invitado@medisync.com',
       name: turno.paciente?.nombre,
@@ -109,6 +123,7 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
       failure: `${process.env.FRONTEND_URL}/pago-fallido?turno=${turnoId}`,
       pending: `${process.env.FRONTEND_URL}/pago-pendiente?turno=${turnoId}`,
     },
+    ...(marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
   };
 
   // Reserve the pago row BEFORE calling MercadoPago so the DB is the source of
@@ -124,7 +139,8 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
 
     const reservedData = {
       monto: precioFinal,
-      montoNeto: precioFinal,
+      comisionPorcentaje: feePercent,
+      montoNeto: precioFinal - marketplaceFee,
       estado: 'PENDIENTE' as const,
       cuponId,
       montoDescuento,
@@ -145,7 +161,7 @@ export async function createPaymentPreference(input: CreatePaymentPreferenceInpu
 
   let data;
   try {
-    data = await createMpPreference(preferenceData);
+    data = await callMpWithRefresh(sellerCreds, (token) => createMpPreference(preferenceData, token));
   } catch (err) {
     console.error('Error creando preferencia MP:', err);
     throw new AppError(500, 'MP_ERROR', 'Error al crear preferencia de pago');
