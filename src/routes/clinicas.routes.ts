@@ -126,16 +126,35 @@ router.get('/me/agenda', authMiddleware('CLINICA'), asyncHandler(async (req: Aut
   const clinica = await getClinicaOrFail(req.user!.userId);
 
   const fecha = req.query.fecha as string | undefined;
-  const fechaAgenda = fecha ?? formatClinicDateKey(new Date());
+  const desde = req.query.desde as string | undefined;
+  const hasta = req.query.hasta as string | undefined;
   let dateStart: Date;
   let dateEnd: Date;
 
   try {
-    const bounds = getClinicDayBoundsFromDateString(fechaAgenda);
-    dateStart = bounds.start;
-    dateEnd = bounds.end;
+    if (desde || hasta) {
+      if (!desde || !hasta) {
+        throw new Error('Range requires both desde and hasta');
+      }
+
+      const startBounds = getClinicDayBoundsFromDateString(desde);
+      const endBounds = getClinicDayBoundsFromDateString(hasta);
+      const rangeDays = Math.ceil((endBounds.end.getTime() - startBounds.start.getTime()) / (24 * 60 * 60 * 1000));
+
+      if (rangeDays < 1 || rangeDays > 62) {
+        throw new Error('Range too large');
+      }
+
+      dateStart = startBounds.start;
+      dateEnd = endBounds.end;
+    } else {
+      const fechaAgenda = fecha ?? formatClinicDateKey(new Date());
+      const bounds = getClinicDayBoundsFromDateString(fechaAgenda);
+      dateStart = bounds.start;
+      dateEnd = bounds.end;
+    }
   } catch {
-    throw new AppError(400, 'VALIDATION_ERROR', 'fecha debe tener formato YYYY-MM-DD');
+    throw new AppError(400, 'VALIDATION_ERROR', 'fecha, desde y hasta deben tener formato YYYY-MM-DD');
   }
 
   const turnos = await prisma.turno.findMany({

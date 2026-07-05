@@ -127,7 +127,7 @@ router.get('/', asyncHandler(async (req, res) => {
         id: true, nombre: true, apellido: true, fotoUrl: true,
         precioConsulta: true, lugarAtencion: true, obrasSociales: true,
         bio: true, clinicaId: true, latitud: true, longitud: true,
-        especialidad: true,
+        especialidad: { select: { id: true, nombre: true, icono: true } },
         disponibilidades: {
           where: { activo: true },
           select: { modalidad: true, diaSemana: true, horaInicio: true, horaFin: true },
