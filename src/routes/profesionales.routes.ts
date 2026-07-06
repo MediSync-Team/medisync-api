@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { asyncHandler, success, AppError } from '../utils/response';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
@@ -14,6 +15,7 @@ import {
   getClinicDayBoundsFromDateString,
   getClinicWeekdayFromDateString,
 } from '../utils/clinic-time';
+import { normalizePreconsultaConfig, validatePreconsultaConfig } from '../utils/preconsulta-config';
 
 const router = Router();
 
@@ -538,6 +540,34 @@ router.delete('/:id/tipos-consulta/:tipoId', authMiddleware('PROFESIONAL'), asyn
   }
   await prisma.tipoConsulta.update({ where: { id: req.params.tipoId }, data: { activo: false } });
   res.json(success({ deleted: true }));
+}));
+
+// ── Pre-consultation questionnaire config ──────────────────────────────────
+// Public read: the patient's preconsulta form needs to know which questions to
+// render for this professional. Always returns a normalized config (defaults
+// applied when the column is null), so clients never handle the empty case.
+router.get('/:id/preconsulta-config', asyncHandler(async (req, res) => {
+  const profesional = await prisma.profesional.findUnique({
+    where: { id: req.params.id },
+    select: { preconsultaConfig: true },
+  });
+  if (!profesional) {
+    throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
+  }
+  res.json(success(normalizePreconsultaConfig(profesional.preconsultaConfig)));
+}));
+
+router.put('/:id/preconsulta-config', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthRequest, res) => {
+  const profesionalOwner = await findProfesionalByUserId(req.user!.userId);
+  if (profesionalOwner.id !== req.params.id) {
+    throw new AppError(403, 'FORBIDDEN', 'Sin permisos para editar la configuración de preconsulta');
+  }
+  const config = validatePreconsultaConfig(req.body);
+  await prisma.profesional.update({
+    where: { id: req.params.id },
+    data: { preconsultaConfig: config as unknown as Prisma.InputJsonValue },
+  });
+  res.json(success(config));
 }));
 
 export { router as profesionalesRouter };
