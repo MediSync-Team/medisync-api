@@ -104,4 +104,34 @@ describe('clinic agenda route timezone handling', () => {
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
     expect(mockPrisma.turno.findMany).not.toHaveBeenCalled();
   });
+
+  // Regression: the web client's month calendar (getClinicMonthFetchBounds)
+  // sends desde/hasta as absolute ISO instants, not clinic date-keys — this
+  // used to be rejected with a 400 because the range branch re-parsed them
+  // with the strict YYYY-MM-DD date-key parser.
+  it('accepts a desde/hasta ISO instant range from the month calendar', async () => {
+    await request(app)
+      .get('/clinicas/me/agenda?desde=2026-05-01T03:00:00.000Z&hasta=2026-07-01T03:00:00.000Z')
+      .set('Authorization', `Bearer ${clinicToken}`)
+      .expect(200);
+
+    expect(mockPrisma.turno.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        fechaHora: {
+          gte: new Date('2026-05-01T03:00:00.000Z'),
+          lt: new Date('2026-07-01T03:00:00.000Z'),
+        },
+      }),
+    }));
+  });
+
+  it('rejects a desde/hasta range spanning more than 62 days', async () => {
+    const res = await request(app)
+      .get('/clinicas/me/agenda?desde=2026-01-01T03:00:00.000Z&hasta=2026-12-01T03:00:00.000Z')
+      .set('Authorization', `Bearer ${clinicToken}`)
+      .expect(400);
+
+    expect(res.body.error?.code).toBe('VALIDATION_ERROR');
+    expect(mockPrisma.turno.findMany).not.toHaveBeenCalled();
+  });
 });

@@ -137,16 +137,22 @@ router.get('/me/agenda', authMiddleware('CLINICA'), asyncHandler(async (req: Aut
         throw new Error('Range requires both desde and hasta');
       }
 
-      const startBounds = getClinicDayBoundsFromDateString(desde);
-      const endBounds = getClinicDayBoundsFromDateString(hasta);
-      const rangeDays = Math.ceil((endBounds.end.getTime() - startBounds.start.getTime()) / (24 * 60 * 60 * 1000));
+      // desde/hasta arrive as absolute ISO instants (see getClinicMonthFetchBounds
+      // on the web client), not clinic date-keys — parse them the same way
+      // /turnos/profesional/:id does, not via getClinicDayBoundsFromDateString.
+      const rangeStart = new Date(desde);
+      const rangeEnd = new Date(hasta);
+      if (isNaN(rangeStart.getTime()) || isNaN(rangeEnd.getTime())) {
+        throw new Error('Invalid desde/hasta');
+      }
 
+      const rangeDays = Math.ceil((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
       if (rangeDays < 1 || rangeDays > 62) {
         throw new Error('Range too large');
       }
 
-      dateStart = startBounds.start;
-      dateEnd = endBounds.end;
+      dateStart = rangeStart;
+      dateEnd = rangeEnd;
     } else {
       const fechaAgenda = fecha ?? formatClinicDateKey(new Date());
       const bounds = getClinicDayBoundsFromDateString(fechaAgenda);
@@ -154,7 +160,7 @@ router.get('/me/agenda', authMiddleware('CLINICA'), asyncHandler(async (req: Aut
       dateEnd = bounds.end;
     }
   } catch {
-    throw new AppError(400, 'VALIDATION_ERROR', 'fecha, desde y hasta deben tener formato YYYY-MM-DD');
+    throw new AppError(400, 'VALIDATION_ERROR', 'fecha debe tener formato YYYY-MM-DD; desde y hasta deben ser fechas ISO válidas');
   }
 
   const turnos = await prisma.turno.findMany({
