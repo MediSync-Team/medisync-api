@@ -18,6 +18,7 @@ import { reservarTurno, confirmarReservaGuest } from '../services/turnos/booking
 import { reprogramarTurno } from '../services/turnos/reschedule.service';
 import { cambiarEstadoTurno } from '../services/turnos/estado.service';
 import { guardarPreconsulta, guardarEvolucion, guardarReceta } from '../services/turnos/clinical.service';
+import { normalizePreconsultaConfig } from '../utils/preconsulta-config';
 
 const router = Router();
 
@@ -314,6 +315,13 @@ router.get('/:id/receta', authMiddleware(), asyncHandler(async (req: AuthRequest
 router.get('/:id/preconsulta', authMiddleware(), asyncHandler(async (req: AuthRequest, res) => {
   const { turno } = await assertTurnoAccess(req.params.id, req.user!.userId);
 
+  // The professional's questionnaire config drives which fields/questions the
+  // patient form renders. Always normalized so clients never see null.
+  const prof = await prisma.profesional.findUnique({
+    where: { id: turno.profesionalId },
+    select: { preconsultaConfig: true },
+  });
+
   res.json(success({
     motivo: turno.preconsultaMotivo,
     sintomas: turno.preconsultaSintomas,
@@ -326,6 +334,8 @@ router.get('/:id/preconsulta', authMiddleware(), asyncHandler(async (req: AuthRe
     flags: turno.preconsultaFlags,
     resumen: turno.preconsultaResumen,
     completadaAt: turno.preconsultaCompletadaAt,
+    respuestas: (turno.preconsultaRespuestas as Record<string, unknown> | null) ?? {},
+    config: normalizePreconsultaConfig(prof?.preconsultaConfig ?? null),
   }));
 }));
 

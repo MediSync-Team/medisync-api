@@ -59,13 +59,19 @@ router.get('/unread-global', asyncHandler(async (req: AuthRequest, res) => {
   res.json(success({ count }));
 }));
 
-// GET /api/chat/:turnoId — list messages
+// GET /api/chat/:turnoId — list messages. Optional ?since=<ISO date> returns only
+// messages strictly newer than that timestamp, for cheap incremental polling;
+// an absent/invalid value falls back to the full last-200 behavior.
 router.get('/:turnoId', asyncHandler(async (req: AuthRequest, res) => {
   const { turnoId } = req.params;
   await assertChatAccess(turnoId, req);
 
+  const sinceRaw = typeof req.query.since === 'string' ? req.query.since : undefined;
+  const since = sinceRaw ? new Date(sinceRaw) : undefined;
+  const isValidSince = since !== undefined && !Number.isNaN(since.getTime());
+
   const mensajes = await prisma.chatMensaje.findMany({
-    where: { turnoId },
+    where: { turnoId, ...(isValidSince ? { createdAt: { gt: since } } : {}) },
     orderBy: { createdAt: 'asc' },
     take: 200,
   });

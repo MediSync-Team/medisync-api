@@ -202,6 +202,10 @@ model Profesional {
   obrasSociales   String[] @map("obras_sociales")
   fotoUrl         String?  @map("foto_url")
   activo          Boolean  @default(true)
+  // Per-professional pre-consultation questionnaire config: which default
+  // fields are shown/required + a list of custom questions. Shape defined in
+  // src/utils/preconsulta-config.ts (PreconsultaConfig).
+  preconsultaConfig Json?  @map("preconsulta_config")
   notifEmail      Boolean  @default(true) @map("notif_email")
   notifWhatsapp   Boolean  @default(false) @map("notif_whatsapp")
   clinicaId       String?  @map("clinica_id")
@@ -319,6 +323,9 @@ model Turno {
   preconsultaFlags    Json?       @map("preconsulta_flags")
   preconsultaResumen  String?     @map("preconsulta_resumen")
   preconsultaCompletadaAt DateTime? @map("preconsulta_completada_at")
+  // Patient answers to the professional's custom pre-consultation questions,
+  // keyed by question id. Default fields keep their dedicated columns above.
+  preconsultaRespuestas Json?     @map("preconsulta_respuestas")
   linkVideollamada    String?     @map("link_videollamada")
   lugarAtencion       String?     @map("lugar_atencion")
   notasCancelacion    String?     @map("notas_cancelacion")

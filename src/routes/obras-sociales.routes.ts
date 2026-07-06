@@ -28,6 +28,8 @@ const OBRAS_SOCIALES = [
 ];
 
 router.get('/', asyncHandler(async (_req, res) => {
+  // Hardcoded list, only ever changes on deploy — safe to cache aggressively.
+  res.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
   res.json(success(OBRAS_SOCIALES));
 }));
 

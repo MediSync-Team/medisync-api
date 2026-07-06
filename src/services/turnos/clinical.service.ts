@@ -1,6 +1,8 @@
+import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
 import { analyzePreconsulta } from '../preconsulta.service';
+import { normalizePreconsultaConfig, validateRespuestas } from '../../utils/preconsulta-config';
 import { formatClinicDateEs, formatClinicTimeEs, formatClinicDateTimeEs } from '../../utils/clinic-time';
 import { assertTurnoAccess, assertPreconsultaEditable, notifyTurnoUser } from './turno-helpers';
 
@@ -12,11 +14,15 @@ export interface GuardarPreconsultaInput {
   inicioSintomas?: unknown;
   temperatura?: unknown;
   notasPaciente?: unknown;
+  respuestas?: unknown; // answers to the professional's custom questions, keyed by question id
 }
 
 /**
  * Validate, AI-analyze and persist a patient's pre-consultation questionnaire.
- * Returns the shaped preconsulta payload including the `aiGenerated` flag.
+ * `motivo` + `sintomas` are always required (they feed the AI triage); the rest
+ * of the built-in fields and any custom questions are governed by the
+ * professional's `preconsultaConfig`. Returns the shaped preconsulta payload
+ * including the `aiGenerated` flag.
  */
 export async function guardarPreconsulta(turnoId: string, userId: string, body: GuardarPreconsultaInput) {
   const { motivo, sintomas, escalaDolor, escalaAnsiedad, inicioSintomas, temperatura, notasPaciente } = body;
@@ -29,6 +35,7 @@ export async function guardarPreconsulta(turnoId: string, userId: string, body: 
 
   assertPreconsultaEditable(turno);
 
+  // Core fields — always required.
   if (typeof motivo !== 'string' || motivo.trim().length < 5 || motivo.trim().length > 400) {
     throw new AppError(400, 'VALIDATION_ERROR', 'El motivo debe tener entre 5 y 400 caracteres');
   }
@@ -37,44 +44,83 @@ export async function guardarPreconsulta(turnoId: string, userId: string, body: 
     throw new AppError(400, 'VALIDATION_ERROR', 'Los sintomas deben tener entre 5 y 1200 caracteres');
   }
 
-  if (!Number.isInteger(escalaDolor) || (escalaDolor as number) < 0 || (escalaDolor as number) > 10) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'La escala de dolor debe estar entre 0 y 10');
-  }
-
-  if (!Number.isInteger(escalaAnsiedad) || (escalaAnsiedad as number) < 0 || (escalaAnsiedad as number) > 10) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'La escala de ansiedad debe estar entre 0 y 10');
-  }
-
-  const inicioNormalizado = typeof inicioSintomas === 'string' && inicioSintomas.trim().length > 0
-    ? inicioSintomas.trim().slice(0, 80)
-    : null;
-
-  const notasNormalizadas = typeof notasPaciente === 'string' && notasPaciente.trim().length > 0
-    ? notasPaciente.trim().slice(0, 2000)
-    : null;
-
-  let temperaturaNormalizada: number | null = null;
-  if (temperatura !== undefined && temperatura !== null && temperatura !== '') {
-    if (typeof temperatura !== 'number' || Number.isNaN(temperatura) || temperatura < 34 || temperatura > 43) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'La temperatura debe estar entre 34 y 43');
-    }
-    temperaturaNormalizada = Math.round(temperatura * 10) / 10;
-  }
-
-  // Load especialidad name for AI context
+  // Load especialidad name (AI context) + the professional's questionnaire config.
   const profConEspecialidad = await prisma.profesional.findUnique({
     where: { id: turno.profesionalId },
     include: { especialidad: { select: { nombre: true } } },
   });
+  const config = normalizePreconsultaConfig(profConEspecialidad?.preconsultaConfig ?? null);
+
+  // Built-in default fields: validate/store only the ones the professional left
+  // enabled. Disabled fields are persisted as null and never block the save.
+  let escalaDolorValue: number | null = null;
+  if (config.defaults.escalaDolor.enabled) {
+    const v = escalaDolor === undefined || escalaDolor === null ? 0 : escalaDolor;
+    if (!Number.isInteger(v) || (v as number) < 0 || (v as number) > 10) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La escala de dolor debe estar entre 0 y 10');
+    }
+    escalaDolorValue = v as number;
+  }
+
+  let escalaAnsiedadValue: number | null = null;
+  if (config.defaults.escalaAnsiedad.enabled) {
+    const v = escalaAnsiedad === undefined || escalaAnsiedad === null ? 0 : escalaAnsiedad;
+    if (!Number.isInteger(v) || (v as number) < 0 || (v as number) > 10) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La escala de ansiedad debe estar entre 0 y 10');
+    }
+    escalaAnsiedadValue = v as number;
+  }
+
+  let inicioNormalizado: string | null = null;
+  if (config.defaults.inicioSintomas.enabled) {
+    inicioNormalizado = typeof inicioSintomas === 'string' && inicioSintomas.trim().length > 0
+      ? inicioSintomas.trim().slice(0, 80)
+      : null;
+    if (config.defaults.inicioSintomas.required && !inicioNormalizado) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Indicá cuándo comenzaron los síntomas');
+    }
+  }
+
+  let notasNormalizadas: string | null = null;
+  if (config.defaults.notasPaciente.enabled) {
+    notasNormalizadas = typeof notasPaciente === 'string' && notasPaciente.trim().length > 0
+      ? notasPaciente.trim().slice(0, 2000)
+      : null;
+    if (config.defaults.notasPaciente.required && !notasNormalizadas) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Completá las notas adicionales');
+    }
+  }
+
+  let temperaturaNormalizada: number | null = null;
+  if (config.defaults.temperatura.enabled) {
+    if (temperatura !== undefined && temperatura !== null && temperatura !== '') {
+      if (typeof temperatura !== 'number' || Number.isNaN(temperatura) || temperatura < 34 || temperatura > 43) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'La temperatura debe estar entre 34 y 43');
+      }
+      temperaturaNormalizada = Math.round(temperatura * 10) / 10;
+    } else if (config.defaults.temperatura.required) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Ingresá la temperatura corporal');
+    }
+  }
+
+  // Custom questions defined by the professional.
+  const respuestas = validateRespuestas(config, body.respuestas);
+
+  // Fold custom answers into the AI notes context so triage stays informed.
+  const customContext = config.custom
+    .filter((q) => q.id in respuestas)
+    .map((q) => `${q.label}: ${respuestas[q.id]}`)
+    .join('\n');
+  const aiNotas = [notasNormalizadas, customContext].filter(Boolean).join('\n') || null;
 
   const analysis = await analyzePreconsulta({
     motivo: motivo.trim(),
     sintomas: sintomas.trim(),
-    escalaDolor: escalaDolor as number,
-    escalaAnsiedad: escalaAnsiedad as number,
+    escalaDolor: escalaDolorValue ?? 0,
+    escalaAnsiedad: escalaAnsiedadValue ?? 0,
     inicioSintomas: inicioNormalizado,
     temperatura: temperaturaNormalizada,
-    notasPaciente: notasNormalizadas,
+    notasPaciente: aiNotas,
     especialidad: profConEspecialidad?.especialidad?.nombre ?? null,
   });
 
@@ -83,11 +129,12 @@ export async function guardarPreconsulta(turnoId: string, userId: string, body: 
     data: {
       preconsultaMotivo: motivo.trim(),
       preconsultaSintomas: sintomas.trim(),
-      preconsultaEscalaDolor: escalaDolor as number,
-      preconsultaEscalaAnsiedad: escalaAnsiedad as number,
+      preconsultaEscalaDolor: escalaDolorValue,
+      preconsultaEscalaAnsiedad: escalaAnsiedadValue,
       preconsultaInicioSintomas: inicioNormalizado,
       preconsultaTemperatura: temperaturaNormalizada,
       preconsultaNotasPaciente: notasNormalizadas,
+      preconsultaRespuestas: respuestas as unknown as Prisma.InputJsonValue,
       preconsultaRiesgo: analysis.riesgo,
       preconsultaFlags: analysis.flags,
       preconsultaResumen: analysis.resumen,
@@ -102,6 +149,7 @@ export async function guardarPreconsulta(turnoId: string, userId: string, body: 
       preconsultaInicioSintomas: true,
       preconsultaTemperatura: true,
       preconsultaNotasPaciente: true,
+      preconsultaRespuestas: true,
       preconsultaRiesgo: true,
       preconsultaFlags: true,
       preconsultaResumen: true,
@@ -117,6 +165,7 @@ export async function guardarPreconsulta(turnoId: string, userId: string, body: 
     inicioSintomas: updated.preconsultaInicioSintomas,
     temperatura: updated.preconsultaTemperatura ? Number(updated.preconsultaTemperatura) : null,
     notasPaciente: updated.preconsultaNotasPaciente,
+    respuestas: (updated.preconsultaRespuestas as Record<string, unknown> | null) ?? {},
     riesgo: updated.preconsultaRiesgo,
     flags: updated.preconsultaFlags,
     resumen: updated.preconsultaResumen,
