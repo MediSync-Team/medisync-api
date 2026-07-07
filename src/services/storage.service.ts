@@ -60,6 +60,38 @@ export async function storeArchivo(
   return { url: `/uploads/${filename}`, storage: 'local' };
 }
 
+/**
+ * Persist a validated image buffer (profile photos / avatars) and return its URL.
+ * Same Cloudinary-or-local strategy as {@link storeArchivo}, but always an image
+ * resource and stored under a caller-provided folder (e.g. `avatars`).
+ */
+export async function storeImage(
+  buffer: Buffer,
+  opts: { folder: string; ext: string },
+): Promise<StoredFile> {
+  if (isCloudinaryConfigured()) {
+    const folder = `medisync/${opts.folder}`;
+    const publicId = randomUUID();
+    const url = await new Promise<string>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder, resource_type: 'image', public_id: publicId },
+        (err, result) => {
+          if (err || !result) reject(err ?? new Error('Cloudinary upload failed'));
+          else resolve(result.secure_url);
+        },
+      );
+      stream.end(buffer);
+    });
+    return { url, storage: 'cloudinary' };
+  }
+
+  // Local-disk fallback (dev without Cloudinary).
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  const filename = `${randomUUID()}${opts.ext}`;
+  await fs.writeFile(path.join(UPLOAD_DIR, filename), buffer);
+  return { url: `/uploads/${filename}`, storage: 'local' };
+}
+
 /** Best-effort deletion by stored URL (Cloudinary public_id derived from the URL, or local file). */
 export async function deleteArchivoByUrl(url: string): Promise<void> {
   const parsed = parseCloudinaryUrl(url);

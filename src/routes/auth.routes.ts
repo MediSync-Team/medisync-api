@@ -17,13 +17,13 @@ const strongPasswordMessage = 'La contraseña debe tener al menos 8 caracteres, 
 router.post(
   '/register',
   [
-    body('email').isEmail().normalizeEmail(),
+    body('email').isEmail().withMessage('El email no es válido').normalizeEmail(),
     body('password').matches(STRONG_PASSWORD_REGEX).withMessage(strongPasswordMessage),
-    body('rol').isIn(['PROFESIONAL', 'PACIENTE', 'CLINICA']),
-    body('nombre').notEmpty().trim(),
-    body('apellido').notEmpty().trim(),
-    body('telefono').optional().matches(/^[\d\s\-\+\(\)]{8,20}$/),
-    body('genero').optional().isIn(['MASCULINO', 'FEMENINO', 'OTRO', 'NO_ESPECIFICADO']),
+    body('rol').isIn(['PROFESIONAL', 'PACIENTE', 'CLINICA']).withMessage('El rol seleccionado no es válido'),
+    body('nombre').trim().isLength({ min: 2 }).withMessage('El nombre debe tener al menos 2 caracteres'),
+    body('apellido').trim().isLength({ min: 2 }).withMessage('El apellido debe tener al menos 2 caracteres'),
+    body('telefono').optional({ checkFalsy: true }).matches(/^[\d\s\-\+\(\)]{8,20}$/).withMessage('El teléfono no es válido'),
+    body('genero').optional().isIn(['MASCULINO', 'FEMENINO', 'OTRO', 'NO_ESPECIFICADO']).withMessage('El género seleccionado no es válido'),
   ],
   asyncHandler(async (req, res) => {
     validateRequest(validationResult(req));

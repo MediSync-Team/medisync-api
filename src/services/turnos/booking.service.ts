@@ -7,10 +7,11 @@ import { sendNotification } from '../../utils/notifications';
 import { resolveWaitlistForBooking } from '../waitlist.service';
 import {
   DEFAULT_APPOINTMENT_DURATION_MIN,
-  SLOT_GRID_STEP_MIN,
+  appointmentFitsAvailability,
   findMatchingAvailability,
   hasAppointmentConflict,
   hasBlockConflict,
+  timeStringToMinutes,
 } from '../../utils/appointment-conflicts';
 import { acquireAppointmentDayLock } from '../../utils/appointment-locks';
 import {
@@ -82,10 +83,6 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
 
   const clinicParts = getClinicDateTimeParts(fechaHoraDate);
 
-  if (clinicParts.minute % SLOT_GRID_STEP_MIN !== 0) {
-    throw new AppError(400, 'VALIDATION_ERROR', `El horario debe alinearse a bloques de ${SLOT_GRID_STEP_MIN} minutos`);
-  }
-
   const profesional = await prisma.profesional.findUnique({ where: { id: profesionalId } });
   if (!profesional || !profesional.activo) {
     throw new AppError(404, 'NOT_FOUND', 'Profesional no encontrado');
@@ -110,6 +107,22 @@ export async function reservarTurno(input: ReservarTurnoInput): Promise<Reservar
 
   if (!matchingDisp) {
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
+  }
+
+  // Offered start times are anchored to each availability window's start and stepped
+  // by the appointment duration (see getAvailableSlotsForProfessional). Enforce that
+  // same grid here so a window that opens off the absolute :00/:15 grid (e.g. 08:20)
+  // is still bookable, while arbitrary mid-slot times are rejected. Check every
+  // fitting window (not just the first) so overlapping windows with different offsets
+  // don't reject a slot that is valid for one of them.
+  const alignsToOfferedSlot = dispSlots.some((disp) => {
+    const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidad;
+    return modalidadOk
+      && appointmentFitsAvailability(disp, bookingStartMinutes, duracionMin)
+      && (bookingStartMinutes - timeStringToMinutes(disp.horaInicio)) % duracionMin === 0;
+  });
+  if (!alignsToOfferedSlot) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El horario seleccionado no es un turno válido para este profesional');
   }
 
   const slotDate = getClinicDateOnlyUtc(clinicParts.dateKey);

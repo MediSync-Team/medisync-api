@@ -1,5 +1,5 @@
 import prisma from '../lib/prisma';
-import { DEFAULT_APPOINTMENT_DURATION_MIN, SLOT_GRID_STEP_MIN, appointmentFitsAvailability, hasAppointmentConflict, hasBlockConflict } from '../utils/appointment-conflicts';
+import { DEFAULT_APPOINTMENT_DURATION_MIN, hasAppointmentConflict, hasBlockConflict, timeStringToMinutes } from '../utils/appointment-conflicts';
 import {
   clinicDateTimeToUtcDate,
   getClinicDateOnlyUtc,
@@ -53,29 +53,29 @@ export async function getAvailableSlotsForProfessional(params: {
   disponibilidad.forEach((disp) => {
     if (modalidad && disp.modalidad !== modalidad && disp.modalidad !== 'AMBOS') return;
 
-    let [h, m] = disp.horaInicio.split(':').map(Number);
-    const [hf, mf] = disp.horaFin.split(':').map(Number);
+    const startMinutes = timeStringToMinutes(disp.horaInicio);
+    const endMinutes = timeStringToMinutes(disp.horaFin);
 
-    while (h < hf || (h === hf && m < mf)) {
+    // Step the grid by the appointment duration (not a fixed 15-min step) so the
+    // offered start times tile the window without overlapping. This keeps a booked
+    // slot from also knocking out its neighbours, and makes the final slot that ends
+    // exactly at the availability end appear. Start times are anchored to horaInicio,
+    // so a window that opens at e.g. 08:20 is bookable even though :20 is not on the
+    // absolute :00/:15/:30/:45 grid.
+    for (let slotMinutes = startMinutes; slotMinutes + duracionMin <= endMinutes; slotMinutes += duracionMin) {
+      const h = Math.floor(slotMinutes / 60);
+      const m = slotMinutes % 60;
       const horaStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      if (slotsMap.has(horaStr)) continue;
+
       const slotDate = clinicDateTimeToUtcDate(fecha, horaStr);
-      const slotMinutes = h * 60 + m;
-      const fitsAvailability = appointmentFitsAvailability(disp, slotMinutes, duracionMin);
       const ocupado = hasAppointmentConflict(turnosOcupados, slotDate, duracionMin);
       const bloqueado = hasBlockConflict(bloqueos, slotMinutes, duracionMin);
 
-      if (fitsAvailability && !slotsMap.has(horaStr)) {
-        slotsMap.set(horaStr, {
-          disponible: !ocupado && !bloqueado,
-          lugarAtencion: disp.lugarAtencion ?? null,
-        });
-      }
-
-      m += SLOT_GRID_STEP_MIN;
-      if (m >= 60) {
-        h++;
-        m -= 60;
-      }
+      slotsMap.set(horaStr, {
+        disponible: !ocupado && !bloqueado,
+        lugarAtencion: disp.lugarAtencion ?? null,
+      });
     }
   });
 
