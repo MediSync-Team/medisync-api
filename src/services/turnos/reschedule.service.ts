@@ -3,10 +3,11 @@ import prisma from '../../lib/prisma';
 import { AppError } from '../../utils/response';
 import {
   DEFAULT_APPOINTMENT_DURATION_MIN,
-  SLOT_GRID_STEP_MIN,
+  appointmentFitsAvailability,
   findMatchingAvailability,
   hasAppointmentConflict,
   hasBlockConflict,
+  timeStringToMinutes,
 } from '../../utils/appointment-conflicts';
 import { acquireAppointmentDayLock } from '../../utils/appointment-locks';
 import {
@@ -50,10 +51,6 @@ export async function reprogramarTurno(input: ReprogramarTurnoInput) {
 
   const nuevaClinicParts = getClinicDateTimeParts(nuevaFechaHora);
 
-  if (nuevaClinicParts.minute % SLOT_GRID_STEP_MIN !== 0) {
-    throw new AppError(400, 'VALIDATION_ERROR', `El horario debe alinearse a bloques de ${SLOT_GRID_STEP_MIN} minutos`);
-  }
-
   const nuevaModalidad = modalidad || undefined;
   if (nuevaModalidad && !['PRESENCIAL', 'VIRTUAL'].includes(nuevaModalidad)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'Modalidad invalida');
@@ -91,6 +88,20 @@ export async function reprogramarTurno(input: ReprogramarTurnoInput) {
 
   if (!matchingDispRep) {
     throw new AppError(409, 'HORARIO_NO_DISPONIBLE', 'El horario seleccionado no esta disponible para este profesional');
+  }
+
+  // Same duration-stepped grid as slot generation, anchored to the availability
+  // start, so off-grid windows (e.g. opening at 08:20) are reschedulable. Check
+  // every fitting window so overlapping windows with different offsets don't
+  // reject a slot that is valid for one of them.
+  const reprogramAlignsToOfferedSlot = disponibilidades.some((disp) => {
+    const modalidadOk = disp.modalidad === 'AMBOS' || disp.modalidad === modalidadFinal;
+    return modalidadOk
+      && appointmentFitsAvailability(disp, reprogramStartMinutes, reprogramDurationMin)
+      && (reprogramStartMinutes - timeStringToMinutes(disp.horaInicio)) % reprogramDurationMin === 0;
+  });
+  if (!reprogramAlignsToOfferedSlot) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El horario seleccionado no es un turno válido para este profesional');
   }
 
   const profReprog = await prisma.profesional.findUnique({ where: { id: turno.profesionalId }, select: { lugarAtencion: true } });

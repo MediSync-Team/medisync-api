@@ -9,6 +9,7 @@ import { getAvailableSlotsForProfessional } from '../services/slot-availability.
 import { SLOT_GRID_STEP_MIN } from '../utils/appointment-conflicts';
 import { geocodeAddress } from '../services/geocoding.service';
 import { haversineKm, boundingBox, isValidCoord } from '../utils/geo';
+import { isValidMatricula } from '../utils/matricula';
 import {
   addDaysToClinicDate,
   formatClinicDateKey,
@@ -282,6 +283,10 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
     throw new AppError(400, 'VALIDATION_ERROR', 'El género debe ser MASCULINO, FEMENINO, OTRO o NO_ESPECIFICADO');
   }
 
+  if (matricula != null && String(matricula).trim() !== '' && !isValidMatricula(String(matricula))) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'La matrícula no tiene un formato válido (ej: MN 123456 o MP 12345)');
+  }
+
   if (especialidadId !== undefined) {
     const especialidad = await prisma.especialidad.findUnique({ where: { id: especialidadId } });
     if (!especialidad) {
@@ -318,7 +323,7 @@ router.put('/:id', authMiddleware('PROFESIONAL'), asyncHandler(async (req: AuthR
       ...geoData,
       precioConsulta,
       fotoUrl,
-      matricula,
+      matricula: typeof matricula === 'string' ? matricula.trim() : matricula,
       ...(especialidadId !== undefined && { especialidadId }),
       // Normalize to uppercase for consistent filtering
       ...(Array.isArray(obrasSociales) && {
