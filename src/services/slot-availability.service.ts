@@ -48,6 +48,7 @@ export async function getAvailableSlotsForProfessional(params: {
   const fullDayBlock = bloqueos.some((bloqueo) => !bloqueo.horaInicio && !bloqueo.horaFin);
   if (fullDayBlock) return [];
 
+  const now = new Date();
   const slotsMap = new Map<string, { disponible: boolean; lugarAtencion: string | null }>();
 
   disponibilidad.forEach((disp) => {
@@ -69,6 +70,10 @@ export async function getAvailableSlotsForProfessional(params: {
       if (slotsMap.has(horaStr)) continue;
 
       const slotDate = clinicDateTimeToUtcDate(fecha, horaStr);
+      // Hide start times that already passed: booking.service rejects fechaHora <= now,
+      // so offering them would only dead-end at confirmation.
+      if (slotDate <= now) continue;
+
       const ocupado = hasAppointmentConflict(turnosOcupados, slotDate, duracionMin);
       const bloqueado = hasBlockConflict(bloqueos, slotMinutes, duracionMin);
 
