@@ -4,7 +4,6 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import cron from 'node-cron';
@@ -38,6 +37,7 @@ import { expireStaleWaitlistNotifications } from './services/waitlist.service';
 import { cleanupStaleReservations } from './services/appointment-cleanup.service';
 import { downgradeExpiredProPlans } from './services/subscription-expiry.service';
 import { createCorsOriginRules, isOriginAllowed } from './config/cors';
+import { createGlobalLimiter } from './middleware/rate-limiters';
 import prisma from './lib/prisma';
 
 const app = express();
@@ -86,39 +86,17 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  // Dev (`npm run dev`) generates heavy polling while testing; keep prod strict.
-  max: isProduction ? 200 : 10000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS',
-}));
+app.use(createGlobalLimiter(isProduction));
 app.use(cookieParser());
 app.use(express.json({ limit: '50kb' })); // Prevent memory exhaustion; larger payloads rejected with 413
 app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // 20 attempts per IP per 15 minutes
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: { code: 'RATE_LIMIT', message: 'Demasiados intentos fallidos. Intenta más tarde.' } },
-  skip: (req) => {
-    if (req.method === 'OPTIONS') {
-      return true;
-    }
-    // Don't rate limit registration, password reset, or email verification
-    return ['/api/auth/register', '/api/auth/reset-password', '/api/auth/verify-email'].includes(req.path);
-  },
-});
-
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.use('/api/auth', authLimiter, authRouter);
+app.use('/api/auth', authRouter);
 app.use('/api/especialidades', especialidadesRouter);
 app.use('/api/profesionales', profesionalesRouter);
 app.use('/api/turnos', turnosRouter);

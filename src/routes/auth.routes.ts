@@ -8,6 +8,8 @@ import { asyncHandler, success, AppError } from '../utils/response';
 import { sendNotification } from '../utils/notifications';
 import { setTokenCookie } from '../utils/auth-helpers';
 import { validateRequest } from '../utils/validation';
+import { loginRateLimiter } from '../middleware/rate-limiters';
+import { getFailedLoginUpdate, getRemainingLockMinutes, isAccountLocked } from '../utils/login-lockout';
 
 const router = Router();
 
@@ -106,6 +108,7 @@ router.post(
 
 router.post(
   '/login',
+  loginRateLimiter,
   [
     body('email').isEmail().normalizeEmail(),
     body('password').notEmpty(),
@@ -124,8 +127,8 @@ router.post(
     });
 
     // Check if account is locked (even for nonexistent users to prevent enumeration)
-    if (user?.lockedUntil && user.lockedUntil > new Date()) {
-      const remainingMinutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+    if (user && isAccountLocked(user)) {
+      const remainingMinutes = getRemainingLockMinutes(user);
       throw new AppError(429, 'ACCOUNT_LOCKED', `Cuenta bloqueada. Intenta en ${remainingMinutes} minuto${remainingMinutes !== 1 ? 's' : ''}.`);
     }
 
@@ -139,22 +142,14 @@ router.post(
 
     const validPassword = await bcrypt.compare(password, user.passwordHash);
     if (!validPassword) {
-      // Increment failed login attempts and lock if necessary
-      const newFailedAttempts = (user.failedLoginAttempts || 0) + 1;
-      const lockedUntil = newFailedAttempts >= 10
-        ? new Date(Date.now() + 15 * 60 * 1000) // Lock for 15 minutes
-        : null;
+      const failedLoginUpdate = getFailedLoginUpdate(user);
 
       await prisma.usuario.update({
         where: { id: user.id },
-        data: {
-          failedLoginAttempts: newFailedAttempts,
-          lockedUntil,
-          lastFailedLoginAt: new Date(),
-        },
+        data: failedLoginUpdate,
       });
 
-      if (lockedUntil) {
+      if (failedLoginUpdate.lockedUntil) {
         throw new AppError(429, 'ACCOUNT_LOCKED', 'Demasiados intentos fallidos. Cuenta bloqueada por 15 minutos.');
       }
 
